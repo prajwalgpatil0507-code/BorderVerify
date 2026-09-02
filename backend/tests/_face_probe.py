@@ -2,6 +2,10 @@ import sys, os, cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from app.services.face import detect_faces, match_faces, _face_descriptor, _similarity
 from app.config import settings
+try:
+    from app.services.embeddings import available as embed_available
+except Exception:
+    embed_available = lambda: False
 
 def log(*a):
     sys.stdout.write(' '.join(str(x) for x in a) + '\n'); sys.stdout.flush()
@@ -14,13 +18,18 @@ pd = detect_faces(prov)
 log("ref faces:", rd.count, rd.boxes)
 log("prov faces:", pd.count, pd.boxes)
 
+log("embedding model available:", embed_available())
 if rd.count and pd.count:
     d1 = _face_descriptor(ref, rd.boxes[0])
     for b in pd.boxes:
         d2 = _face_descriptor(prov, b)
-        log("similarity:", round(_similarity(d1, d2), 3))
+        log("heuristic similarity:", round(_similarity(d1, d2), 3))
     m = match_faces(ref, prov, settings.FACE_MATCH_THRESHOLD, settings.FACE_REVIEW_THRESHOLD)
-    log("match:", m.status, round(m.score,3), m.message)
+    log("match (automatic path):", m.status, round(m.score,3), m.message)
+    if embed_available():
+        from app.services.embeddings import embedding_match
+        e = embedding_match(ref, prov, settings.FACE_MATCH_THRESHOLD, settings.FACE_REVIEW_THRESHOLD)
+        log("match (arcface):", e.status, round(e.score,3), e.message)
 else:
     log("Face detection did not find faces on synthetic images (expected for demo).")
     log("Face verification path will be exercised via demo face_score instead.")

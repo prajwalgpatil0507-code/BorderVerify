@@ -110,6 +110,32 @@ class Settings:
     # --- Face ---
     FACE_MATCH_THRESHOLD: float = float(os.getenv("FACE_MATCH_THRESHOLD", "0.62"))
     FACE_REVIEW_THRESHOLD: float = float(os.getenv("FACE_REVIEW_THRESHOLD", "0.78"))
+    # Pre-trained ArcFace/InsightFace recognition model (512-d embeddings). When
+    # present the deep embedding replaces the heuristic face matcher in
+    # face.py. It is downloaded locally by _download_arcface.py and is NOT
+    # committed (see .gitignore).
+    FACE_EMBEDDING_MODEL: str = os.getenv(
+        "FACE_EMBEDDING_MODEL", str(BASE_DIR / "arcface_w600k_r50.onnx"))
+
+    # --- Gemini (optional AI-assisted document analysis) ---
+    # The API key is read ONLY from the environment (populated from .env when
+    # python-dotenv is available). It is never hardcoded and never sent to the
+    # frontend. When absent, the AI layer is disabled and the existing pipeline
+    # is used unchanged.
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    # Strict advisory timeout. Gemini is optional: if it is slow, returns 429/503
+    # or exceeds this, verification continues immediately with the normal result.
+    GEMINI_TIMEOUT_S: float = float(os.getenv("GEMINI_TIMEOUT_S", "6"))
+
+    # --- Image processing bounds (speed vs accuracy for large uploads) ---
+    # RapidOCR and the tamper heuristics re-scale images internally, so feeding
+    # very large images mostly adds preprocessing cost (denoise / ELA) without
+    # improving accuracy. These caps bound the working resolution before the
+    # expensive steps so large uploads do not stall the pipeline.
+    OCR_MAX_DIM: int = int(os.getenv("OCR_MAX_DIM", "1800"))
+    OCR_UPSCALE_DIM: int = int(os.getenv("OCR_UPSCALE_DIM", "900"))
+    TAMPER_MAX_DIM: int = int(os.getenv("TAMPER_MAX_DIM", "1200"))
 
     # --- Offline ---
     OFFLINE_MODE: bool = os.getenv("OFFLINE_MODE", "true").lower() in ("1", "true", "yes")

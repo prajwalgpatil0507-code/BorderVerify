@@ -22,6 +22,7 @@ import cv2
 @dataclass
 class FaceDetection:
     boxes: list = field(default_factory=list)   # [x, y, w, h]
+    landmarks: list = field(default_factory=list)  # [[x,y] x5] per face (YuNet order)
     count: int = 0
 
     def to_dict(self) -> dict:
@@ -93,12 +94,18 @@ def detect_faces(matrix: np.ndarray) -> FaceDetection:
         return FaceDetection()
     if faces is None:
         return FaceDetection()
-    boxes = []
+    boxes, landmarks = [], []
     for f in faces:
-        # YuNet returns [x, y, w, h, ...landmarks] in image coords.
+        # YuNet returns [x, y, w, h, ...5 x 2 landmarks] in image coords.
         x, y, w, h = int(f[0]), int(f[1]), int(f[2]), int(f[3])
         boxes.append([x, y, w, h])
-    return FaceDetection(boxes=boxes, count=len(boxes))
+        # Landmark order in YuNet: right eye, left eye, nose, right mouth, left mouth.
+        lmk = []
+        for i in range(5):
+            lx, ly = int(f[4 + i * 2]), int(f[5 + i * 2])
+            lmk.append([lx, ly])
+        landmarks.append(lmk)
+    return FaceDetection(boxes=boxes, landmarks=landmarks, count=len(boxes))
 
 
 def _crop_face(matrix: np.ndarray, box) -> np.ndarray:
@@ -179,7 +186,14 @@ def match_faces(reference: np.ndarray, provided: np.ndarray,
     """Match a reference (passport photo) against a provided live/upload photo.
 
     Returns a FaceMatch with score/status.  Thresholds come from settings.
+
+    If a pre-trained ArcFace embedding model is available (see ``embeddings.py``)
+    it is preferred; otherwise the built-in heuristic descriptor is used.
     """
+    embed = _try_embedding_match(reference, provided, threshold, review_threshold)
+    if embed is not None:
+        return embed
+
     ref_det = detect_faces(reference)
     prov_det = detect_faces(provided)
 
@@ -215,3 +229,17 @@ def match_faces(reference: np.ndarray, provided: np.ndarray,
 
     return FaceMatch(similar=similar, score=best_score, status=status,
                      message=message, provided=prov_det, reference=ref_det)
+
+
+def _try_embedding_match(reference: np.ndarray, provided: np.ndarray,
+                         threshold: float, review_threshold: float):
+    """Delegate to the deep ArcFace embedding matcher when available.
+
+    Returns a FaceMatch, or ``None`` if the embedding model is not present so the
+    caller can fall back to the built-in heuristic.
+    """
+    try:
+        from .embeddings import embedding_match
+        return embedding_match(reference, provided, threshold, review_threshold)
+    except Exception:  # noqa: BLE001 -- model missing or runtime error -> fall back
+        return None

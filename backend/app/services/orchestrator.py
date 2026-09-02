@@ -14,11 +14,55 @@ Supports two entry points:
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Optional
 
 import numpy as np
 import cv2
+
+logger = logging.getLogger("borderverify.orchestrator")
+
+
+def _now() -> float:
+    return time.perf_counter()
+
+
+def _elapsed_since(t0: float) -> float:
+    return time.perf_counter() - t0
+
+
+def _log_timing(timing: dict) -> None:
+    total = timing.get("total", 0.0)
+    parts = " | ".join(f"{k}={v:.2f}s" for k, v in timing.items())
+    logger.info("VERIFY TIMING: %s | total=%.2fs", parts, total)
+
+
+def _run_face_match(reference_photo_path: str, provided_photo_path: str):
+    """Runs face verification in a worker thread. Never raises; returns a
+    ``FaceMatch`` on any outcome (mirrors the original inline fallback)."""
+    try:
+        ref_img = _load_image(reference_photo_path)
+        prov_img = _load_image(provided_photo_path)
+        return face_service.match_faces(
+            ref_img, prov_img,
+            threshold=settings.FACE_MATCH_THRESHOLD,
+            review_threshold=settings.FACE_REVIEW_THRESHOLD)
+    except Exception:  # noqa: BLE001 - degraded to no_face, never blocks pipeline
+        return face_service.FaceMatch(
+            similar=False, score=0.0, status="no_face",
+            message="Face verification could not run on the provided images.",
+            provided=face_service.FaceDetection(),
+            reference=face_service.FaceDetection())
+
+
+# Shared executor reused across requests for the advisory Gemini call only.
+# It is created ONCE so we never spin up / tear down threads per request (which
+# would accumulate threads over many verifications and degrade the server). The
+# pool lives for the process lifetime.
+_GEMINI_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gemini")
 
 from ..config import settings
 from . import ocr as ocr_service
@@ -30,6 +74,7 @@ from . import face as face_service
 from . import risk as risk_service
 from . import countries as countries_service
 from . import providers as provider_service
+from . import gemini as gemini_service
 from .providers import SOURCE_LABEL as DS_LABEL, ENVIRONMENT as DS_ENV
 from .date_utils import expiry_status, parse_iso
 
@@ -533,15 +578,41 @@ def verify_image(image_path: str,
                  provided_photo_path: Optional[str] = None,
                  document_type: str = "auto",
                  extra_attrs: Optional[dict] = None) -> dict:
+    t_start = _now()
+    timing: dict = {}
     risk_signals: dict = {}
 
+    # Load the document image ONCE; the same array feeds OCR and tamper so it is
+    # never decoded/processed twice.
     try:
         img = _load_image(image_path)
     except VerificationError:
         # Fall through to demo if image is unavailable but we have metadata
         img = None
 
-    # --- OCR ---
+    # ------------------------------------------------------------------
+    # Independent, expensive stages are scheduled as soon as their inputs are
+    # available. Gemini is started NOW so its (bounded) round-trip overlaps OCR:
+    # it runs on a shared executor thread with a strict internal HTTP timeout, so
+    # it can never block the pipeline. OCR runs on the main thread. Face + tamper
+    # are inexpensive, so they run synchronously later - parallelising them would
+    # add no measurable speed and would only complicate (and risk leaking) the
+    # pipeline. Each async stage is joined with a bounded wait and degrades
+    # gracefully.
+    # ------------------------------------------------------------------
+    # --- Gemini (advisory; never blocks) ---
+    _t0 = _now()
+    gemini_future = _GEMINI_POOL.submit(
+        gemini_service.analyze_document,
+        image_path or "",
+        "",
+        {},
+        document_type=document_type,
+    )
+    timing["gemini_submit"] = _elapsed_since(_t0)
+
+    # --- OCR (main thread; feeds MRZ / fields) ---
+    _t0 = _now()
     ocr_lines_payload = []
     if img is not None:
         try:
@@ -556,60 +627,32 @@ def verify_image(image_path: str,
         ocr_text = (extra_attrs or {}).get("ocr_text", "")
         ocr_fields = (extra_attrs or {}).get("extracted_fields", {})
         ocr_conf = 0.0
+    timing["ocr"] = _elapsed_since(_t0)
 
     detected_type = ocr_service.detect_document_type(ocr_text)
     if document_type in ("auto", "", None):
         document_type = detected_type if detected_type != "unknown" else "passport"
 
     # --- MRZ ---
+    _t0 = _now()
     mrz = mrz_service.extract_mrz_from_text(ocr_text)
     mrz_checksum_ok = bool(mrz and mrz.checksum_passed)
+    timing["mrz"] = _elapsed_since(_t0)
 
     # --- Cross validation ---
+    _t0 = _now()
     cross_check = crosscheck_service.validate(ocr_fields, mrz)
     if not cross_check.overall_consistent:
         risk_signals["ocr_mrz_mismatch"] = True
-
-    # --- Tamper ---
-    if img is not None:
-        tamper_result = tamper_service.analyze(img)
-    else:
-        tamper_result = tamper_service.TamperResult()
-    if tamper_result.risk_level == "high":
-        risk_signals["tamper_high"] = True
-    elif tamper_result.risk_level == "medium":
-        risk_signals["tamper_medium"] = True
-
-    # --- Face ---
-    if reference_photo_path and provided_photo_path:
-        try:
-            ref_img = _load_image(reference_photo_path)
-            prov_img = _load_image(provided_photo_path)
-            face_result = face_service.match_faces(
-                ref_img, prov_img,
-                threshold=settings.FACE_MATCH_THRESHOLD,
-                review_threshold=settings.FACE_REVIEW_THRESHOLD)
-        except Exception:  # noqa: BLE001
-            face_result = face_service.FaceMatch(
-                similar=False, score=0.0, status="no_face",
-                message="Face verification could not run on the provided images.",
-                provided=face_service.FaceDetection(),
-                reference=face_service.FaceDetection())
-    else:
-        face_result = face_service.FaceMatch(
-            similar=False, score=0.0, status="no_face",
-            message="Face photo not provided - face verification not performed.",
-            provided=face_service.FaceDetection(),
-            reference=face_service.FaceDetection())
-    if face_result.status == "mismatch":
-        risk_signals["face_mismatch"] = True
-    elif face_result.status == "no_face":
-        risk_signals["face_low_quality"] = False
+    timing["cross_check"] = _elapsed_since(_t0)
 
     # --- Merge passenger record ---
+    _t0 = _now()
     passenger = _merge_fields(ocr_fields, mrz)
+    timing["merge"] = _elapsed_since(_t0)
 
     # --- Expiry ---
+    _t0 = _now()
     expiry = passenger.get("date_of_expiry", "")
     expiry_iso = _yyyymmdd_to_iso(expiry)
     exp = expiry_status(parse_iso(expiry_iso), settings.EXPIRING_SOON_DAYS)
@@ -617,11 +660,13 @@ def verify_image(image_path: str,
         risk_signals["expired_passport"] = True
     elif exp["status"] == "expiring_soon":
         risk_signals["expiring_passport"] = True
+    timing["expiry"] = _elapsed_since(_t0)
 
-    # --- Reference DATABASE look-ups (passport / visa / watchlist / duplicate) ---
+    # --- Reference DATABASE look-ups (passport / visa / watchlist) ---
     # The storage backend (MongoDB or SQLite) is chosen by the provider factory.
     doc_no = passenger.get("document_number", "")
 
+    _t0 = _now()
     passport_lookup = provider_service.get_passport_provider().lookup(doc_no)
     if passport_lookup.found:
         # If the DB record says the document is invalid / flag, add an anomaly.
@@ -646,7 +691,41 @@ def verify_image(image_path: str,
         else:
             risk_signals["watchlist_match"] = True
 
-    # Duplicate identity (reference DB prior-traveller records)
+    if not mrz_checksum_ok:
+        risk_signals["invalid_mrz"] = True
+    timing["database"] = _elapsed_since(_t0)
+
+    # --- Tamper (inexpensive; runs synchronously) ---
+    _t0 = _now()
+    if img is not None:
+        tamper_result = tamper_service.analyze(img)
+    else:
+        tamper_result = tamper_service.TamperResult()
+    if tamper_result.risk_level == "high":
+        risk_signals["tamper_high"] = True
+    elif tamper_result.risk_level == "medium":
+        risk_signals["tamper_medium"] = True
+    timing["tamper"] = _elapsed_since(_t0)
+
+    # --- Face (inexpensive; runs synchronously, skipped without photos) ---
+    _t0 = _now()
+    if reference_photo_path and provided_photo_path:
+        face_result = _run_face_match(reference_photo_path, provided_photo_path)
+    else:
+        face_result = face_service.FaceMatch(
+            similar=False, score=0.0, status="no_face",
+            message="Face photo not provided - face verification not performed.",
+            provided=face_service.FaceDetection(),
+            reference=face_service.FaceDetection())
+    if face_result.status == "mismatch":
+        risk_signals["face_mismatch"] = True
+    elif face_result.status == "no_face":
+        risk_signals["face_low_quality"] = False
+    timing["face"] = _elapsed_since(_t0)
+
+    # Duplicate identity (reference DB prior-traveller records). Depends on the
+    # face result, so it must run after face verification.
+    _t0 = _now()
     dup = provider_service.get_identity_provider().check(
         {"surname": passenger.get("surname", ""),
          "given_names": passenger.get("given_names", ""),
@@ -656,14 +735,34 @@ def verify_image(image_path: str,
         face_score=face_result.score if face_result.status != "no_face" else None)
     if dup.is_duplicate:
         risk_signals["duplicate_identity"] = True
-    if not mrz_checksum_ok:
-        risk_signals["invalid_mrz"] = True
+    timing["database"] += _elapsed_since(_t0)
+
+    # --- Gemini result (bounded join so it can never block the pipeline) ---
+    _t0 = _now()
+    gemini_timeout = max(1.0, float(getattr(settings, "GEMINI_TIMEOUT_S", 6) or 6))
+    try:
+        ai_assist = gemini_future.result(timeout=gemini_timeout + 1.0)
+    except FutureTimeout:
+        ai_assist = gemini_service.unavailable_payload(
+            f"AI-assisted analysis timed out after {gemini_timeout:.0f}s and was "
+            "skipped. Verification completed on the deterministic checks.")
+    except Exception:  # noqa: BLE001 - Gemini must never break verification
+        ai_assist = gemini_service.unavailable_payload(
+            "AI-assisted analysis failed and was skipped. Verification "
+            "completed on the deterministic checks.")
+    timing["gemini"] = _elapsed_since(_t0)
 
     # --- Risk ---
+    _t0 = _now()
     risk = risk_service.score(risk_signals)
+    timing["risk"] = _elapsed_since(_t0)
+
+    timing["total"] = _elapsed_since(t_start)
+    _log_timing(timing)
 
     return {
         "scenario": "image",
+        "ai_assist": ai_assist,
         "document_type": document_type,
         "passenger": passenger,
         "ocr": {"text": ocr_text, "confidence": ocr_conf,
@@ -680,6 +779,7 @@ def verify_image(image_path: str,
         "passport": passport_lookup.to_dict(),
         "visa": visa_lookup.to_dict(),
         "risk": risk.to_dict(),
+        "timing": timing,
         "data_source": DS_LABEL,
         "environment": DS_ENV,
         "backend": provider_service.backend_kind(),

@@ -92,12 +92,37 @@ def upscale(matrix: np.ndarray, factor: float = 2.0) -> np.ndarray:
                       interpolation=cv2.INTER_CUBIC)
 
 
+def _resize_for_ocr(gray: np.ndarray) -> np.ndarray:
+    """Bound the OCR working resolution for speed.
+
+    RapidOCR re-scales the image internally for detection/recognition, so feeding
+    a huge image mostly increases preprocessing cost (denoise) without improving
+    accuracy. We therefore downscale oversized images and only modestly upscale
+    genuinely small ones, keeping the longest side bounded by ``OCR_MAX_DIM``.
+    """
+    h, w = gray.shape[:2]
+    max_dim = max(h, w)
+    if max_dim <= 0:
+        return gray
+    target = int(settings.OCR_MAX_DIM)
+    if max_dim > target:
+        scale = target / max_dim
+        return cv2.resize(gray, (int(w * scale), int(h * scale)),
+                          interpolation=cv2.INTER_AREA)
+    if max_dim < int(settings.OCR_UPSCALE_DIM):
+        scale = min(2.0, target / max_dim)
+        if scale > 1.0:
+            return cv2.resize(gray, (int(w * scale), int(h * scale)),
+                              interpolation=cv2.INTER_CUBIC)
+    return gray
+
+
 def preprocess(matrix: np.ndarray) -> np.ndarray:
     """Standard preprocessing pipeline for passport/visa images."""
     if matrix is None or matrix.size == 0:
         raise ValueError("Empty image")
     g = gray(matrix)
-    g = upscale(g, 2.0)
+    g = _resize_for_ocr(g)
     g = denoise(g)
     g = enhance_contrast(g)
     return g

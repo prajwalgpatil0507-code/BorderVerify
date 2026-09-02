@@ -20,6 +20,8 @@ from typing import Optional
 import numpy as np
 import cv2
 
+from ..config import settings
+
 
 @dataclass
 class TamperSignal:
@@ -59,6 +61,23 @@ def _to_gray(matrix: np.ndarray) -> np.ndarray:
     return matrix
 
 
+def _resize_for_analysis(matrix: np.ndarray, max_dim: int) -> np.ndarray:
+    """Downscale very large images before ELA / region analysis.
+
+    Tampering signals (compression-noise skew, regional variance) are relative
+    metrics, so operating on a bounded resolution keeps the heuristic meaningful
+    while avoiding a slow full-resolution JPEG re-compression plus statistics on
+    multi-megapixel uploads.
+    """
+    h, w = matrix.shape[:2]
+    m = max(h, w)
+    if m > max_dim > 0:
+        scale = max_dim / m
+        return cv2.resize(matrix, (int(w * scale), int(h * scale)),
+                          interpolation=cv2.INTER_AREA)
+    return matrix
+
+
 def _ela_analysis(gray: np.ndarray, q: int = 80) -> np.ndarray:
     """Error Level Analysis approximation using JPEG recompression.
 
@@ -84,6 +103,8 @@ def analyze(matrix: np.ndarray, metadata: Optional[dict] = None) -> TamperResult
     if matrix is None or matrix.size == 0:
         return TamperResult(overall_score=0, risk_level="low",
                             signals=[], notes=["No image provided."])
+    matrix = _resize_for_analysis(
+        matrix, int(getattr(settings, "TAMPER_MAX_DIM", 1200)))
     if matrix.ndim == 3:
         gray = cv2.cvtColor(matrix, cv2.COLOR_BGR2GRAY)
         color = matrix
