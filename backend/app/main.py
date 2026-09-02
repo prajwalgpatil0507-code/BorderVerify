@@ -52,6 +52,15 @@ def on_startup() -> None:
             mongo_db.ensure_indexes()
     except Exception:  # noqa: BLE001
         pass
+    # Eagerly load the OCR engine so the FIRST verification request does not pay
+    # the (multi-second) RapidOCR model-load cost inside the user's request.
+    # Best-effort: if the engine cannot initialise, verification falls back to
+    # graceful degradation exactly as it does today.
+    try:
+        from .services import ocr as _ocr
+        _ocr._get_engine()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.get("/")
