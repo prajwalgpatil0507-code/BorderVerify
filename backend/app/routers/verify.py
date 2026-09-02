@@ -7,8 +7,10 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..config import settings, UPLOAD_DIR
 from ..core.deps import get_current_officer, log_audit
@@ -104,8 +106,8 @@ async def extract_ocr(filename: str = Form(...),
         raise HTTPException(status_code=404, detail="Uploaded file not found")
     from ..services.ocr import run_ocr_from_bytes
     try:
-        data = path.read_bytes()
-        result = run_ocr_from_bytes(data)
+        data = await run_in_threadpool(path.read_bytes)
+        result = await run_in_threadpool(run_ocr_from_bytes, data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"OCR failed: {exc}")
     return {"text": result.text, "confidence": result.confidence,
@@ -120,8 +122,12 @@ async def mrz_parse(filename: str = Form(...),
         raise HTTPException(status_code=404, detail="Uploaded file not found")
     from ..services.ocr import run_ocr_from_bytes
     from ..services.mrz import extract_mrz_from_text
-    text = run_ocr_from_bytes(path.read_bytes()).text
-    mrz = extract_mrz_from_text(text)
+    try:
+        data = await run_in_threadpool(path.read_bytes)
+        result = await run_in_threadpool(run_ocr_from_bytes, data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"OCR failed: {exc}")
+    mrz = extract_mrz_from_text(result.text)
     return {"found": mrz is not None,
             "mrz": mrz.as_dict() if mrz else None,
             "checksum_valid": bool(mrz and mrz.checksum_passed)}
@@ -140,17 +146,30 @@ async def verify_document(request: VerifyRequest,
     ref_path = upload_dir / request.reference_photo_filename if request.reference_photo_filename else None
     prov_path = upload_dir / request.provided_photo_filename if request.provided_photo_filename else None
 
+    timeout = float(getattr(settings, "VERIFY_TIMEOUT_S", 30) or 30)
     try:
-        result = orchestrator.verify_image(image_path, ref_path, prov_path,
-                                           request.document_type,
-                                           extra_attrs={})
+        # Offload the CPU/IO-heavy pipeline to a Starlette worker thread so it
+        # never blocks the asyncio event loop (which would freeze every other API
+        # endpoint). A bounded timeout turns a stuck verification into an error
+        # instead of leaving the server hanging.
+        with anyio.fail_after(timeout):
+            result = await run_in_threadpool(
+                orchestrator.verify_image, image_path, ref_path, prov_path,
+                request.document_type, extra_attrs={})
     except orchestrator.VerificationError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Verification timed out after {timeout:.0f}s. Please retry.")
+    except Exception as exc:  # noqa: BLE001 - never leave the server stuck
+        raise HTTPException(status_code=500, detail=f"Verification failed: {exc}")
 
     session = _persist(session=None, db=db, result=result,
                        officer_id=officer.id,
                        image_filename=request.image_filename,
-                       reference_photo_filename=request.reference_photo_filename or "")
+                       reference_photo_filename=request.reference_photo_filename or "",
+                       image_url=f"/media/uploads/{request.image_filename}")
     result["verification_id"] = session.id
     result["image_url"] = f"/media/uploads/{request.image_filename}"
     log_audit(db, officer.id, "verify_document",
@@ -173,12 +192,22 @@ async def verify_complete(filename: str = Form(...),
         raise HTTPException(status_code=404, detail="Document image not found")
     ref_path = upload_dir / reference_photo_filename if reference_photo_filename else None
     prov_path = upload_dir / provided_photo_filename if provided_photo_filename else None
+    timeout = float(getattr(settings, "VERIFY_TIMEOUT_S", 30) or 30)
     try:
-        result = orchestrator.verify_image(path, ref_path, prov_path, document_type)
+        with anyio.fail_after(timeout):
+            result = await run_in_threadpool(
+                orchestrator.verify_image, path, ref_path, prov_path, document_type)
     except orchestrator.VerificationError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Verification timed out after {timeout:.0f}s. Please retry.")
+    except Exception as exc:  # noqa: BLE001 - never leave the server stuck
+        raise HTTPException(status_code=500, detail=f"Verification failed: {exc}")
     session = _persist(None, db, result, officer.id, filename,
-                       reference_photo_filename or "")
+                       reference_photo_filename or "",
+                       image_url=f"/media/uploads/{filename}")
     result["verification_id"] = session.id
     result["image_url"] = f"/media/uploads/{filename}"
     return result
@@ -190,9 +219,6 @@ async def verify_demo(request: RawVerifyRequest,
                       db: Session = Depends(get_db)):
     """Run one of the seven SIH demonstration cases."""
     result = orchestrator.verify_demo(request)
-    session = _persist(None, db, result, officer.id,
-                       image_filename="", reference_photo_filename="")
-    result["verification_id"] = session.id
     # Show a matching sample document image for the demo result page.
     _demo_img = {
         "valid": "/media/samples/valid_passport.png",
@@ -204,7 +230,12 @@ async def verify_demo(request: RawVerifyRequest,
         "duplicate": "/media/samples/valid_passport.png",
         "not_found": "/media/samples/valid_passport.png",
     }
-    result["image_url"] = _demo_img.get(request.scenario, "/media/samples/valid_passport.png")
+    demo_img = _demo_img.get(request.scenario, "/media/samples/valid_passport.png")
+    session = _persist(None, db, result, officer.id,
+                       image_filename="", reference_photo_filename="",
+                       image_url=demo_img)
+    result["verification_id"] = session.id
+    result["image_url"] = demo_img
     return result
 
 
@@ -223,11 +254,13 @@ async def verify_synthetic(request: SyntheticVerifyRequest,
     except orchestrator.VerificationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    session = _persist(None, db, result, officer.id,
-                       image_filename="", reference_photo_filename="")
-    result["verification_id"] = session.id
     sample_file = orchestrator.synthetic_sample_file(request.synthetic_id)
-    result["image_url"] = f"/media/samples/{sample_file}" if sample_file else ""
+    synth_img = f"/media/samples/{sample_file}" if sample_file else ""
+    session = _persist(None, db, result, officer.id,
+                       image_filename="", reference_photo_filename="",
+                       image_url=synth_img)
+    result["verification_id"] = session.id
+    result["image_url"] = synth_img
     log_audit(db, officer.id, "verify_synthetic",
               f"Synthetic doc '{request.synthetic_id}' -> "
               f"{result['risk']['level']} ({result['risk']['score']})")
@@ -250,7 +283,13 @@ async def get_verification(vid: int, officer: Officer = Depends(get_current_offi
     session = db.query(VerificationSession).filter(VerificationSession.id == vid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Verification not found")
-    return session.result_json
+    result = dict(session.result_json or {})
+    result["verification_id"] = session.id
+    # Ensure a restored session can always show its document image, even for
+    # sessions persisted before image_url was stored (fall back to /media).
+    if not result.get("image_url") and session.image_filename:
+        result["image_url"] = f"/media/uploads/{session.image_filename}"
+    return result
 
 
 @router.get("/risk-score")
@@ -291,14 +330,21 @@ async def get_alerts(officer: Officer = Depends(get_current_officer),
 # ---------------------------------------------------------------------------
 
 def _persist(session, db, result, officer_id, image_filename,
-             reference_photo_filename):
+             reference_photo_filename, image_url=""):
     """Persist a verification session + alerts derived from a result.
 
     The `session` argument is accepted for API compatibility but currently
     unused; a fresh VerificationSession is always created from the result.
+    `image_url` is persisted into the session's result_json so a restored
+    session can display the document image after a full page refresh.
     """
     passenger = result.get("passenger", {})
     risk = result.get("risk", {})
+    stored_result = dict(result)
+    if image_url:
+        stored_result["image_url"] = image_url
+    elif image_filename:
+        stored_result["image_url"] = f"/media/uploads/{image_filename}"
     session = VerificationSession(
         officer_id=officer_id,
         status="completed",
@@ -313,7 +359,7 @@ def _persist(session, db, result, officer_id, image_filename,
         decision=risk.get("decision", "VERIFIED"),
         image_filename=image_filename,
         reference_photo_filename=reference_photo_filename,
-        result_json=result,
+        result_json=stored_result,
     )
     db.add(session)
     db.flush()

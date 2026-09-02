@@ -1,6 +1,7 @@
 """FastAPI application entrypoint for Zynovix BorderVerity."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -26,10 +27,12 @@ app = FastAPI(
                 "prototype (Smart India Hackathon).",
 )
 
-# In development the SPA origins are broad; tighten in production.
+# CORS origins come from settings (env-driven) so production can pin them to the
+# deployed frontend origin instead of the permissive local-dev default.
+_cors_origins = settings.CORS_ORIGINS or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -111,4 +114,12 @@ if DATA_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
+    # Bind to 0.0.0.0 and honour the platform-supplied PORT so the same entry
+    # point works for local dev (uvicorn app.main:app) and container hosts
+    # (Render sets $PORT; Docker/heroku set $PORT too).
+    uvicorn.run(
+        "app.main:app",
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+        reload=os.getenv("RELOAD", "false").lower() in ("1", "true", "yes"),
+    )

@@ -7,6 +7,7 @@ ONNX inference does not crash the application process - failures surface as an
 from __future__ import annotations
 
 import re
+import threading
 from collections import OrderedDict
 from typing import Optional
 
@@ -40,6 +41,9 @@ class OcrResult:
 _ENGINE = None
 _ENGINE_ERROR: Optional[str] = None
 _ENGINE_TRIED = False
+# Serialises OCR jobs (see run_ocr). Created lazily so it is safe regardless of
+# import order across threads.
+_OCR_LOCK = threading.Lock()
 
 
 def _get_engine():
@@ -154,13 +158,19 @@ def _line_texts(ocr_lines) -> list:
 
 def run_ocr(matrix: np.ndarray) -> OcrResult:
     """Run OCR on a raw image matrix (BGR or gray)."""
-    engine = _get_engine()
-    prep = preprocess(matrix)
-    try:
-        # RapidOCR can accept either a path or an ndarray.
-        result, _elapse = engine(prep)
-    except Exception as exc:  # noqa: BLE001
-        raise OcrEngineError(f"RapidOCR inference failed: {exc}") from exc
+    # RapidOCR's detector + recogniser share internal buffers and are not safe to
+    # invoke concurrently. Serialise the whole OCR job with a process-wide lock so
+    # correctness is preserved if several verification requests arrive at once.
+    # The lock covers only OCR: unrelated pipeline stages (MRZ, face, tamper,
+    # database) and unrelated endpoints remain free to run in parallel.
+    with _OCR_LOCK:
+        engine = _get_engine()
+        prep = preprocess(matrix)
+        try:
+            # RapidOCR can accept either a path or an ndarray.
+            result, _elapse = engine(prep)
+        except Exception as exc:  # noqa: BLE001
+            raise OcrEngineError(f"RapidOCR inference failed: {exc}") from exc
 
     lines = _line_texts(result)
     words = []

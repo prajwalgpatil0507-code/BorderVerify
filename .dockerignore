@@ -1,0 +1,41 @@
+# Keep secrets, local data, VCS, and large artifacts out of the Docker image.
+.git
+.gitignore
+.gitattributes
+
+# Environment / secrets — never into an image
+backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example
+
+# Local runtate data (uploads, SQLite, local mongodb)
+data/uploads/
+data/*.db
+data/mongodb/
+data/mongodb
+mongodb/
+
+# Large local-only model (downloaded by _download_arcface.py); excluded so the
+# image stays small. Face verification falls back gracefully when absent.
+backend/arcface_w600k_r50.onnx
+
+# Python
+backend/.venv/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Misc
+backend/server.log
+*.log
+node_modules/
+dist/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

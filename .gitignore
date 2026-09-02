@@ -13,7 +13,12 @@ env/
 
 # Uploads are user-provided data — never commit
 data/uploads/
-data/samples/
+
+# Demo/synthetic sample images ARE committed: they are small, read-only assets
+# required for the built-in demo/synthetic verification cases to run in a fresh
+# production container (no personal or sensitive data).
+!data/samples/
+!data/samples/*.png
 
 # Runtime SQLite database
 data/*.db

@@ -19,14 +19,24 @@ except Exception:  # dotenv is optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent          # backend/
 PROJECT_ROOT = BASE_DIR.parent                              # project root
-DATA_DIR = PROJECT_ROOT / "data"                            # project/data (shared)
-UPLOAD_DIR = DATA_DIR / "uploads"
-SAMPLE_DIR = DATA_DIR / "samples"
+# Runtime data directory. Defaults to a project-relative folder for local dev.
+# In production set DATA_DIR to a mounted/persistent volume so user uploads and
+# the SQLite database survive container restarts. SAMPLE_DIR (committed static
+# demo assets) stays separate from the (potentially persistent) DATA_DIR so the
+# built-in demo/synthetic cases always work even when DATA_DIR is a fresh volume.
+DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_ROOT / "data")))  # project/data (shared)
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(DATA_DIR / "uploads")))
+SAMPLE_DIR = Path(os.getenv("SAMPLE_DIR", str(PROJECT_ROOT / "data" / "samples")))
 DB_PATH = DATA_DIR / "border_verify.db"
 
 # Ensure runtime directories exist
 for _d in (UPLOAD_DIR, SAMPLE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+
+
+def _parse_csv(value: str) -> list[str]:
+    """Parse a comma-separated environment value into a list of trimmed strings."""
+    return [v.strip() for v in value.split(",") if v.strip()]
 
 
 class Settings:
@@ -46,6 +56,12 @@ class Settings:
     APP_NAME: str = os.getenv("APP_NAME", "Zynovix BorderVerity")
     API_PREFIX: str = os.getenv("API_PREFIX", "/api")
     SECRET_KEY: str = os.getenv("SECRET_KEY", "sih-zynovix-demo-secret-change-me")
+    # Comma-separated list of allowed CORS origins. In production set this to the
+    # deployed frontend origin(s), e.g. "https://my-app.onrender.com". "*" allows
+    # any origin (convenient for local dev; tighten it for production). The
+    # frontend and backend are served from the same origin, so CORS is mainly
+    # relevant only if the SPA is hosted separately from the API.
+    CORS_ORIGINS: list = _parse_csv(os.getenv("CORS_ORIGINS", "*"))
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))
 
@@ -136,6 +152,13 @@ class Settings:
     OCR_MAX_DIM: int = int(os.getenv("OCR_MAX_DIM", "1800"))
     OCR_UPSCALE_DIM: int = int(os.getenv("OCR_UPSCALE_DIM", "900"))
     TAMPER_MAX_DIM: int = int(os.getenv("TAMPER_MAX_DIM", "1200"))
+
+    # --- Verification request safety ---
+    # The CPU/IO-heavy verification pipeline runs in a Starlette worker thread
+    # (off the asyncio event loop) so other endpoints stay responsive. This caps
+    # how long a single verification request may take; if exceeded, the request
+    # returns an error instead of leaving the client (and the pipeline) stuck.
+    VERIFY_TIMEOUT_S: float = float(os.getenv("VERIFY_TIMEOUT_S", "30"))
 
     # --- Offline ---
     OFFLINE_MODE: bool = os.getenv("OFFLINE_MODE", "true").lower() in ("1", "true", "yes")

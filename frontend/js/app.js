@@ -9,6 +9,11 @@ const state = {
   uploads: {},   // name -> url for local display
 };
 
+// Key used to remember the CURRENT verification session id on the frontend.
+// Only the numeric verification_id is stored (never the document itself); the
+// session + document are re-fetched from the backend via /verification/{id}.
+const LS_VID = "bv_last_verification_id";
+
 /* ------------------------------------------------------------------ *
  * Helpers
  * ------------------------------------------------------------------ */
@@ -200,7 +205,66 @@ function fmtTime(iso) { try { return new Date(iso).toLocaleString(); } catch (e)
  * New Verification
  * ------------------------------------------------------------------ */
 
-let _docFile = null, _faceFile = null, _docPreview = null, _facePreview = null;
+/* In-memory state for the New Verification page.
+   Survives SPA navigation (hash changes) so an uploaded document, its preview
+   and any completed / in-flight verification are restored when the officer
+   returns to this page. The actual document (File object + preview object URL)
+   is kept in memory ONLY - it is never written to localStorage/sessionStorage,
+   which would risk persisting PII beyond the existing upload flow. */
+const verifyState = {
+  docFile: null,     // uploaded document File
+  docPreview: null,  // object URL for the document preview
+  docType: "auto",   // selected document type
+  faceFile: null,    // optional applicant photo File
+  facePreview: null, // object URL for the face preview
+  running: false,    // a verification is currently in flight
+  activeId: null,    // verification_id of the last run in this session
+  lastResult: null,  // last completed verification result (document flow)
+};
+
+// Apply an uploaded document file: persist it in memory and render its preview.
+// Render a document preview into the upload zone from any image source
+// (an object URL for a freshly picked file, or a backend /media URL when a
+// previously persisted session is restored after a refresh).
+function renderDocPreviewEl(src, name, sizeLabel) {
+  const p = $("#doc-preview");
+  if (!p) return;
+  p.classList.remove("hidden");
+  p.innerHTML = `<img src="${src}" alt="preview"><div><div class="muted">${esc(name)}</div>` +
+    (sizeLabel ? `<div class="muted" style="font-size:12px">${sizeLabel}</div>` : "") + `</div>`;
+}
+
+// Apply an uploaded document file: persist it in memory and render its preview.
+function setDocFile(f) {
+  verifyState.docFile = f || null;
+  if (verifyState.docPreview) { URL.revokeObjectURL(verifyState.docPreview); verifyState.docPreview = null; }
+  if (f) {
+    verifyState.docPreview = URL.createObjectURL(f);
+    renderDocPreviewEl(verifyState.docPreview, f.name, (f.size / 1024).toFixed(1) + " KB");
+  } else {
+    verifyState.docPreview = null;
+    const p = $("#doc-preview");
+    if (p) { p.classList.add("hidden"); p.innerHTML = ""; }
+  }
+}
+
+// Apply an optional applicant photo: persist it in memory and render its preview.
+function setFaceFile(f) {
+  verifyState.faceFile = f || null;
+  if (verifyState.facePreview) { URL.revokeObjectURL(verifyState.facePreview); verifyState.facePreview = null; }
+  if (f) verifyState.facePreview = URL.createObjectURL(f);
+  const p = $("#face-preview");
+  if (p) {
+    if (f) {
+      p.classList.remove("hidden");
+      p.innerHTML = `<img src="${verifyState.facePreview}" alt="preview"><div><div class="muted">${esc(f.name)}</div>
+        <div class="muted" style="font-size:12px">${(f.size / 1024).toFixed(1)} KB</div></div>`;
+    } else {
+      p.classList.add("hidden");
+      p.innerHTML = "";
+    }
+  }
+}
 
 async function renderVerify() {
   const c = $("#page-content");
@@ -273,14 +337,15 @@ async function renderVerify() {
         <button class="demo-btn red" data-synth="college_tampered"><span class="demo-synth-tag">college</span> edited ${ic("alert")} HIGH</button>
       </div>
     </div>
+
     <div class="card mt hidden" id="verify-progress">
       <div class="loading-block"><span class="spinner"></span> Running verification pipeline… OCR → MRZ → Face → Risk → Decision</div>
     </div>
     `;
 
   // attach upload handlers
-  wireUpload("doc-zone", "doc-input", "doc-preview", f => { _docFile = f; });
-  wireUpload("face-zone", "face-input", "face-preview", f => { _faceFile = f; });
+  wireUpload("doc-zone", "doc-input", "doc-preview", f => setDocFile(f));
+  wireUpload("face-zone", "face-input", "face-preview", f => setFaceFile(f));
 
   $("#doc-input").addEventListener("change", e => handlePick(e, "doc"));
   $("#face-input").addEventListener("change", e => handlePick(e, "face"));
@@ -288,6 +353,55 @@ async function renderVerify() {
   $("#run-verify").onclick = runImageVerify;
   document.querySelectorAll(".demo-btn[data-demo]").forEach(b => b.onclick = () => runDemo(b.dataset.demo));
   document.querySelectorAll(".demo-btn[data-synth]").forEach(b => b.onclick = () => runSynthetic(b.dataset.synth));
+
+  // Rehydrate any in-memory state (uploaded document, doc type, running flag)
+  // so navigating away and back to this page does not lose the current work.
+  const dtSel = $("#doc-type");
+  if (dtSel) {
+    dtSel.value = verifyState.docType;
+    dtSel.addEventListener("change", e => { verifyState.docType = e.target.value; });
+  }
+  if (verifyState.docFile) setDocFile(verifyState.docFile);
+  else if (verifyState.docPreview) renderDocPreviewEl(verifyState.docPreview, "Restored document", "");
+  if (verifyState.faceFile) setFaceFile(verifyState.faceFile);
+  if (verifyState.running) {
+    const prog = $("#verify-progress");
+    if (prog) prog.classList.remove("hidden");
+  }
+
+  // Restore the latest persisted verification session from the backend so the
+  // New Verification page survives a full browser refresh (not just navigation).
+  // Only the verification_id is kept on the frontend (localStorage); the actual
+  // document image and all results are re-fetched from the existing DB record.
+  if (!verifyState.lastResult && !verifyState.running) {
+    const vid = parseInt(localStorage.getItem(LS_VID) || "", 10);
+    if (vid) {
+      c.insertAdjacentHTML("beforeend",
+        `<div class="card mt" id="verify-restoring"><div class="loading-block"><span class="spinner"></span> Restoring previous verification session…</div></div>`);
+      try {
+        const result = await api("/verification/" + vid);
+        state.results[vid] = result;
+        verifyState.activeId = vid;
+        verifyState.lastResult = result;
+        verifyState.docType = result.document_type || verifyState.docType;
+        if (dtSel && result.document_type) dtSel.value = verifyState.docType;
+        if (result.image_url) {
+          verifyState.docPreview = result.image_url;
+          renderDocPreviewEl(result.image_url, "Restored document", "");
+        }
+      } catch (e) {
+        localStorage.removeItem(LS_VID);  // stale id -> show empty upload screen
+      } finally {
+        const l = $("#verify-restoring"); if (l) l.remove();
+      }
+    }
+  }
+
+  // Render the restored session's full results in the UI: OCR/MRZ, extracted
+  // fields, database match, risk score/result, tamper, face, and final decision.
+  if (verifyState.lastResult && verifyState.activeId) {
+    c.insertAdjacentHTML("beforeend", restoredSessionHtml(verifyState.lastResult, verifyState.activeId));
+  }
 }
 
 function wireUpload(zoneId, inputId, previewId, onPick) {
@@ -303,42 +417,43 @@ function setInput(input, file) {
 }
 function handlePick(e, kind) {
   const f = e.target.files[0]; if (!f) return;
-  const previewId = kind === "doc" ? "doc-preview" : "face-preview";
-  const inputId = kind === "doc" ? "doc-input" : "face-input";
-  showPreview(previewId, f);
-  if (kind === "doc") _docFile = f; else _faceFile = f;
-}
-function showPreview(previewId, file) {
-  const url = URL.createObjectURL(file);
-  const p = $("#" + previewId);
-  p.classList.remove("hidden");
-  p.innerHTML = `<img src="${url}" alt="preview"><div><div class="muted">${esc(file.name)}</div>
-    <div class="muted" style="font-size:12px">${(file.size/1024).toFixed(1)} KB</div></div>`;
+  if (kind === "doc") setDocFile(f); else setFaceFile(f);
 }
 
 async function runImageVerify() {
-  if (!_docFile) { toast("Please upload a document image", true); return; }
-  const prog = $("#verify-progress"); prog.classList.remove("hidden");
+  if (!verifyState.docFile) { toast("Please upload a document image", true); return; }
+  const prog = $("#verify-progress"); if (prog) prog.classList.remove("hidden");
+  verifyState.running = true;
+  // A new run invalidates any previously restored result for this document.
+  verifyState.lastResult = null; verifyState.activeId = null;
   try {
     toast("Uploading document…");
-    const fd = new FormData(); fd.append("file", _docFile);
+    const fd = new FormData(); fd.append("file", verifyState.docFile);
     const upload = await api("/upload-document", { method: "POST", body: fd });
-    let ref = null, prov = null;
-    if (_faceFile) {
-      const ff = new FormData(); ff.append("file", _faceFile);
+    let prov = null;
+    if (verifyState.faceFile) {
+      const ff = new FormData(); ff.append("file", verifyState.faceFile);
       const up = await api("/upload-photo", { method: "POST", body: ff });
       prov = up.filename;
     }
     toast("Verifying document…");
     const docType = $("#doc-type").value;
+    verifyState.docType = docType;
     const result = await api("/verify/document", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: ref, provided_photo_filename: prov, document_type: docType })
+      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, document_type: docType })
     });
     cacheResult(result);
-    go("#/result/" + result.verification_id);
+    verifyState.running = false;
+    verifyState.activeId = result.verification_id;
+    verifyState.lastResult = result;
+    localStorage.setItem(LS_VID, String(result.verification_id));
+    // Only auto-navigate if the officer is still on this page; otherwise the
+    // completed result is preserved and restored when they return.
+    if ((location.hash || "").includes("verify")) go("#/result/" + result.verification_id);
   } catch (e) {
+    verifyState.running = false;
     const p = $("#verify-progress"); if (p) p.classList.add("hidden");
     toast("Verification failed: " + e.message, true);
   }
@@ -346,26 +461,38 @@ async function runImageVerify() {
 
 async function runDemo(scenario) {
   const prog = $("#verify-progress"); if (prog) prog.classList.remove("hidden");
+  verifyState.running = true;
   try {
     const result = await api("/verify/demo", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scenario })
     });
     cacheResult(result);
-    go("#/result/" + result.verification_id);
-  } catch (e) { toast("Demo failed: " + e.message, true); }
+    verifyState.running = false;
+    localStorage.setItem(LS_VID, String(result.verification_id));
+    if ((location.hash || "").includes("verify")) go("#/result/" + result.verification_id);
+  } catch (e) {
+    verifyState.running = false;
+    toast("Demo failed: " + e.message, true);
+  }
 }
 
 async function runSynthetic(syntheticId) {
   const prog = $("#verify-progress"); if (prog) prog.classList.remove("hidden");
+  verifyState.running = true;
   try {
     const result = await api("/verify/synthetic", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ synthetic_id: syntheticId })
     });
     cacheResult(result);
-    go("#/result/" + result.verification_id);
-  } catch (e) { toast("Synthetic demo failed: " + e.message, true); }
+    verifyState.running = false;
+    localStorage.setItem(LS_VID, String(result.verification_id));
+    if ((location.hash || "").includes("verify")) go("#/result/" + result.verification_id);
+  } catch (e) {
+    verifyState.running = false;
+    toast("Synthetic demo failed: " + e.message, true);
+  }
 }
 
 function cacheResult(result) {
@@ -622,6 +749,66 @@ function sourceCard(result) {
   return `<div class="card"><div class="card-title">${ic("db", "tt-ico")} Database Verification <span class="badge ${backend === "mongodb" ? "badge-blue" : "badge-gray"}">${backend === "mongodb" ? "MongoDB" : "DEMO"}</span></div>
     ${body}
     <p class="muted mt" style="font-size:11px">Simulated data - not a real government database.</p>
+  </div>`;
+}
+
+/* Full rendered results for a restored verification session. Reuses the same
+ * card components as the Result page so OCR/MRZ, extracted fields, database
+ * match, risk, tamper, face and the final decision are all shown in the UI. */
+function restoredSessionHtml(result, id) {
+  const risk = result.risk || {};
+  const decision = risk.decision || "REVIEW REQUIRED";
+  const docImg = result.image_url || "";
+  const rcls = risk.level === "HIGH" ? "badge-red" : risk.level === "MEDIUM" ? "badge-yellow" : "badge-green";
+  const vcls = decision === "VERIFIED" ? "v-verified" : decision === "HIGH RISK" ? "v-high" : "v-review";
+  const meterColor = risk.level === "HIGH" ? "var(--red)" : risk.level === "MEDIUM" ? "var(--yellow)" : "var(--green)";
+  const docTypeLabel = (result.synthetic_label || (result.document_type || "passport").toUpperCase());
+  return `
+  <div class="card mt" id="verify-restored">
+    <div class="flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin:0">${ic("list", "tt-ico")} Restored Verification Session <span class="badge badge-blue">#${id}</span></div>
+      <button class="btn btn-primary btn-sm" onclick="go('#/result/${id}')">${ic("arrowR")} Open Full Result</button>
+    </div>
+    <div class="result-head">
+      <div style="min-width:0">
+        <div class="flex"><span class="badge ${rcls}">RISK ${risk.score} / 100</span>
+          <span class="badge badge-blue">${esc(docTypeLabel)}</span>
+          ${result.backend === "mongodb" ? `<span class="badge badge-green" title="Result driven by a lookup in the MongoDB reference database">DATABASE VERIFICATION</span>` : ""}
+          ${result.backend === "synthetic-image" ? `<span class="badge badge-blue" title="Heuristic image-based document authenticity analysis">SYNTHETIC DOC DEMO</span>` : ""}</div>
+        <h2 style="margin-top:12px">Verification #${id}</h2>
+        <p class="crumb mt">${esc(result.passenger?.full_name || "Unknown passenger")} · ${esc(result.passenger?.document_number||"-")}</p>
+      </div>
+      <div class="result-verdict">
+        <div class="verdict-badge ${vcls}">${esc(decision)}</div>
+        <div class="risk-big" style="justify-content:center"><span class="score-num" style="color:${meterColor}">${risk.score}</span><span class="score-max">/100</span></div>
+        <div class="muted">${risk.level} risk</div>
+      </div>
+    </div>
+    <div class="result-layout">
+      <div>
+        <div class="card mb">
+          <div class="card-title">${ic("doc", "tt-ico")} Document Image</div>
+          ${docImg ? `<img class="doc-image" src="${esc(docImg)}" alt="document">` : `<div class="muted">No image.</div>`}
+          <div class="muted mt" style="font-size:11.5px">${result.backend === "synthetic-image" ? "Synthetic demo document (fictional)." : "Sample/uploaded document for demonstration."}</div>
+        </div>
+      </div>
+      <div>
+        ${whyCard(result)}
+        <div class="section-grid">
+          ${riskCard(result)}
+          ${passengerCard(result.passenger)}
+          ${sourceCard(result)}
+          ${tamperCard(result)}
+          ${ocrCard(result)}
+          ${mrzCard(result)}
+          ${crossCard(result)}
+          ${faceCard(result)}
+          ${expiryCard(result)}
+          ${watchCard(result)}
+          ${dupCard(result)}
+        </div>
+      </div>
+    </div>
   </div>`;
 }
 
