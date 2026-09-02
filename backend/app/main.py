@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -67,13 +67,26 @@ def on_startup() -> None:
 
 
 @app.get("/")
-def index():
-    """Serve the frontend SPA."""
+def index(request: Request):
+    """Serve the frontend SPA, or return a simple health payload.
+
+    The SPA (hash-routed) and the service health check share the same root path.
+    We negotiate by Accept header so that:
+      - a browser page-load (Accept: text/html,...) gets the SPA index.html, and
+      - a health probe / API client (no text/html) gets a clean JSON 200.
+
+    This guarantees the deploy health check (GET /) returns 200 instead of a
+    405, while still serving the frontend correctly in production.
+    """
+    accept = request.headers.get("accept", "")
+    if "text/html" not in accept.lower():
+        return {"status": "ok", "service": "BorderVerify"}
+
     frontend = Path(__file__).resolve().parent.parent.parent / "frontend"
     index_file = frontend / "index.html"
     if index_file.exists():
         return FileResponse(index_file)
-    return {"message": "BorderVerity API is running. Start the frontend to use the dashboard."}
+    return {"status": "ok", "service": "BorderVerify"}
 
 
 @app.get(f"{API}/health")
