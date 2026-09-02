@@ -1,0 +1,97 @@
+"""FastAPI application entrypoint for Zynovix BorderVerity."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+from .config import settings, DATA_DIR
+from .core.deps import configure_logging
+from .models.models import init_db
+from .routers import auth, verify, dashboard, demo, database as database_router
+from .db import mongo as mongo_db
+
+configure_logging()
+
+DATA_DIR.mkdir(exist_ok=True)
+
+
+app = FastAPI(
+    title=f"{settings.APP_NAME} API",
+    version="1.0.0",
+    description="AI-powered travel document verification and fraud detection "
+                "prototype (Smart India Hackathon).",
+)
+
+# In development the SPA origins are broad; tighten in production.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+API = settings.API_PREFIX
+app.include_router(auth.router, prefix=f"{API}/auth")
+app.include_router(verify.router, prefix=API)
+app.include_router(dashboard.router, prefix=API)
+app.include_router(demo.router, prefix=API)
+app.include_router(database_router.router, prefix=API)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
+    # Best-effort: create Mongo indexes if the demo database is reachable.
+    try:
+        if mongo_db.mongo_available():
+            mongo_db.ensure_indexes()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.get("/")
+def index():
+    """Serve the frontend SPA."""
+    frontend = Path(__file__).resolve().parent.parent.parent / "frontend"
+    index_file = frontend / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"message": "BorderVerity API is running. Start the frontend to use the dashboard."}
+
+
+@app.get(f"{API}/health")
+def health():
+    mongo_ok = mongo_db.mongo_available()
+    return {
+        "status": "ok",
+        "service": settings.APP_NAME,
+        "offline_mode": settings.OFFLINE_MODE,
+        "mongo": {
+            "available": mongo_ok,
+            "database": mongo_db.database_name(),
+            "version": None,
+        },
+        "data_source": settings.DATA_SOURCE_LABEL,
+        "environment": settings.DATA_SOURCE_ENVIRONMENT,
+        "government_integration": settings.GOVERNMENT_INTEGRATION,
+    }
+
+
+# Mount static assets (css/js/img) if present.
+_static = Path(__file__).resolve().parent.parent.parent / "frontend"
+if _static.exists() and (_static / "css").exists():
+    app.mount("/static", StaticFiles(directory=str(_static)), name="static")
+
+# Serve uploaded + sample media (uploads/, samples/) under /media.
+if DATA_DIR.exists():
+    app.mount("/media", StaticFiles(directory=str(DATA_DIR)), name="media")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

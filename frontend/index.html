@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zynovix BorderVerity — Immigration Verification</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <!-- ===================== LOGIN ===================== -->
+  <div id="login-view" class="login-view hidden">
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="brand-mark">ZB</div>
+        <h1 class="brand-title">Zynovix <span>BorderVerify</span></h1>
+        <p class="brand-sub">AI-Powered Travel Document Verification</p>
+        <div class="security-chip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          Authorized access · SIH Demo
+        </div>
+        <form id="login-form" class="login-form">
+          <label for="login-user">Username</label>
+          <div class="input-wrap">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <input id="login-user" class="with-icon" type="text" autocomplete="username" value="officer" />
+          </div>
+          <label for="login-pass">Password</label>
+          <div class="input-wrap">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input id="login-pass" class="with-icon" type="password" autocomplete="current-password" value="SIH@2026Demo" />
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+          <p id="login-msg" class="login-msg"></p>
+        </form>
+        <p class="login-hint">Demo credentials pre-filled · <b>officer / SIH@2026Demo</b></p>
+      </div>
+      <p class="login-footer">Synthetic prototype for the Smart India Hackathon. All data is fictional — not a real government system.</p>
+    </div>
+  </div>
+
+  <!-- ===================== APP SHELL ===================== -->
+  <div id="app-view" class="app hidden">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="side-brand"><span class="sb-mark">ZB</span><span class="sb-name">BorderVerify<small>Innovation Suite</small></span></div>
+      <nav class="side-nav">
+        <a href="#/dashboard" data-route="dashboard" class="nav-item"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg></span><span class="nav-label">Dashboard</span></a>
+        <a href="#/verify" data-route="verify" class="nav-item"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></span><span class="nav-label">New Verification</span></a>
+        <a href="#/history" data-route="history" class="nav-item"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span><span class="nav-label">History</span></a>
+        <a href="#/alerts" data-route="alerts" class="nav-item"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span><span class="nav-label">Alerts</span></a>
+        <a href="#/database" data-route="database" class="nav-item"><span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="nav-label">Demo Database</span></a>
+      </nav>
+      <div class="side-footer">
+        <div class="side-mode"><span class="dot dot-green"></span> Offline Capable</div>
+        <div class="side-mode muted">Demo / Mock mode</div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="page-title">Dashboard</h2>
+          <p id="page-breadcrumb" class="crumb">Welcome, officer</p>
+        </div>
+        <div class="topbar-right">
+          <span class="officer-chip"><span class="avatar" id="officer-avatar"></span><span id="officer-name"></span></span>
+          <button id="logout-btn" class="btn btn-ghost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>Logout</button>
+        </div>
+      </header>
+
+      <section id="page-content" class="page-content"></section>
+    </main>
+  </div>
+
+  <!-- ===================== TOAST ===================== -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
