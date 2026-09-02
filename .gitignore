@@ -18,6 +18,10 @@ data/samples/
 # Runtime SQLite database
 data/*.db
 
+# Local runtime logs
+backend/server.log
+*.log
+
 # Frontend build artifacts
 node_modules/
 dist/

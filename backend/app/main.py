@@ -87,6 +87,14 @@ _static = Path(__file__).resolve().parent.parent.parent / "frontend"
 if _static.exists() and (_static / "css").exists():
     app.mount("/static", StaticFiles(directory=str(_static)), name="static")
 
+    # The SPA references assets with root-relative paths (e.g. "css/style.css")
+    # so it also runs as a pure static site (e.g. GitHub Pages). Serve the
+    # asset folders at those same paths for the local FastAPI app.
+    for _sub in ("css", "js", "img"):
+        _sub_path = _static / _sub
+        if (_sub_path).exists():
+            app.mount(f"/{_sub}", StaticFiles(directory=str(_sub_path)), name=_sub)
+
 # Serve uploaded + sample media (uploads/, samples/) under /media.
 if DATA_DIR.exists():
     app.mount("/media", StaticFiles(directory=str(DATA_DIR)), name="media")
