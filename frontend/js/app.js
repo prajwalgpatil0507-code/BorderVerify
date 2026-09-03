@@ -2,31 +2,36 @@
 "use strict";
 
 /* =================================================================== *
- * BACKEND API BASE URL  —  ONE configurable value, no loopback host.
+ * BACKEND API BASE URL  —  auto-discovery + ONE configurable override.
  * =================================================================== *
- * GitHub Pages is STATIC and cannot run FastAPI. The frontend reaches a separately
- * hosted FastAPI backend through a SINGLE configuration value set in index.html:
+ * GitHub Pages is STATIC and cannot run FastAPI. This frontend connects to the
+ * FastAPI backend by probing candidate bases (in order) and using the FIRST one
+ * that answers GET {base}/health with status "ok". Nothing is assumed "always on":
+ * every candidate is probed at runtime, so a remote visitor just gets a clear
+ * message instead of a broken page.
  *
- *     window.BV_API_URL
+ *   1. window.BV_API_URL  — the single explicit override in frontend/index.html.
+ *      Leave it EMPTY in the repo; set it the moment there is a PUBLIC HTTPS
+ *      backend, e.g.   window.BV_API_URL = "https://your-api.example.com/api"
+ *   2. http://127.0.0.1:8000/api and http://localhost:8000/api — the LOCAL FastAPI
+ *      backend (backend/ on port 8000). This is reached only when the GitHub Pages
+ *      page is opened in a browser on the SAME machine that runs FastAPI (the
+ *      presenter's demo laptop); browsers treat localhost/127.0.0.1 as a
+ *      trustworthy origin, so an HTTPS GitHub Pages page may call it. On a phone or
+ *      another device nothing is listening there, so those probes fail fast.
+ *   3. /api — same-origin fallback for local dev where uvicorn serves the SPA.
  *
- * That value is intentionally EMPTY in this repo so the deployed GitHub Pages site
- * NEVER contacts localhost / 127.0.0.1 (a static page has no running backend, and
- * no public backend URL is invented). Once your FastAPI backend has a public HTTPS
- * URL, set e.g.
- *
- *     window.BV_API_URL = "https://your-api.example.com/api"
- *
- * and push — that is the ONLY value you change. Behavior:
- *   - If window.BV_API_URL is set, that exact base is used for EVERY API call.
- *   - If it is empty, the app falls back to a same-origin "/api" so LOCAL dev
- *     (where uvicorn serves the SPA on its own origin) keeps working. This string
- *     is relative — it never hardcodes localhost or 127.0.0.1 in the shipped bundle.
- * The login button never sticks on "Signing in…": every API call carries a timeout
- * that fails fast with a clear message.
+ * The login button never sticks on "Signing in…": each call carries a timeout that
+ * fails fast. (A page opened on a device other than the one running FastAPI cannot
+ * reach a localhost backend — a public HTTPS backend URL is required for that.)
  * =================================================================== */
 
 const BACKEND_CANDIDATES = [];
 if (window.BV_API_URL) BACKEND_CANDIDATES.push(String(window.BV_API_URL));
+// Local FastAPI backend (backend/ on port 8000). Only reached when the GitHub Pages
+// page is opened on the same machine that runs FastAPI. Probed, never assumed up.
+BACKEND_CANDIDATES.push("http://127.0.0.1:8000/api");
+BACKEND_CANDIDATES.push("http://localhost:8000/api");
 BACKEND_CANDIDATES.push("/api"); // same-origin: local dev where FastAPI serves the SPA
 
 let API = ""; // resolved backend base — set only when a candidate answers /health
@@ -55,16 +60,16 @@ async function discoverBackend() {
   const seen = [];
   for (const c of BACKEND_CANDIDATES) if (c && seen.indexOf(c) < 0) seen.push(c);
   if (!seen.length) { API = ""; setBackendStatus("Backend not reachable."); return ""; }
-  // Probe all candidates concurrently; adopt the first healthy one. When
-  // window.BV_API_URL points at a reachable backend it answers in ms, so the login
-  // button never hangs; when nothing is reachable we resolve fast with a clear
-  // message. No localhost / 127.0.0.1 is ever contacted from a deployed page.
+  // Probe all candidates concurrently; adopt the first healthy one. When the local
+  // backend is running on this machine it answers in ms, so login never hangs; when
+  // nothing is reachable (e.g. a phone opening the public page) we resolve fast with
+  // a clear message instead of a stuck "Signing in…" button.
   await Promise.all(seen.map(base => probeBackend(base).then(ok => {
     if (ok && !API) { API = ok; setBackendStatus("Backend connected", "success"); }
   })));
   if (!API) {
     API = "";
-    setBackendStatus("Backend API URL not configured. Set window.BV_API_URL in frontend/index.html to your deployed FastAPI backend root, then redeploy.", "");
+    setBackendStatus("Backend not reachable from here. On the demo laptop, ensure the FastAPI backend (backend/) is running on port 8000, then refresh. From another device, the backend must be exposed at a public HTTPS URL (set window.BV_API_URL).", "");
   }
   return API;
 }
@@ -159,7 +164,7 @@ async function api(path, options = {}) {
   // is up and rejects fast when none is reachable, instead of fetching a dead URL.
   await backendReady;
   if (!API) {
-    throw new Error("Backend API URL not configured. Set window.BV_API_URL in frontend/index.html to your deployed FastAPI backend root, then redeploy.");
+    throw new Error("Backend not reachable from here. On the demo laptop, ensure the FastAPI backend (backend/) is running on port 8000, then refresh. From another device, the backend must be exposed at a public HTTPS URL (set window.BV_API_URL).");
   }
   const headers = options.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
