@@ -41,8 +41,11 @@ services:
         value: "480"
       - key: OFFLINE_MODE
         value: "true"
+      # The static GitHub Pages frontend calls this API cross-origin; allow that
+      # exact origin (NOT "*", which conflicts with allow_credentials). The
+      # Render-hosted copy of the frontend is same-origin, so it needs no CORS.
       - key: CORS_ORIGINS
-        value: "*"
+        value: "https://prajwalgpatil0507-code.github.io"
       - key: MONGODB_DATABASE
         value: borderverify
       - key: MONGODB_CONNECT_TIMEOUT_MS
