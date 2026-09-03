@@ -32,6 +32,7 @@
           <button type="submit" class="btn btn-primary btn-block">Sign In</button>
           <p id="login-msg" class="login-msg"></p>
         </form>
+        <p id="backend-status" class="login-msg"></p>
         <p class="login-hint">Demo credentials pre-filled · <b>officer / SIH@2026Demo</b></p>
       </div>
       <p class="login-footer">Synthetic prototype for the Smart India Hackathon. All data is fictional — not a real government system.</p>
@@ -76,12 +77,15 @@
   <!-- ===================== TOAST ===================== -->
   <div id="toast" class="toast hidden"></div>
 
-  <!-- ===== BACKEND API URL — the ONE place to configure your FastAPI backend =====
-       GitHub Pages is static; it cannot run FastAPI. Point this at your running
-       backend (e.g. "https://myapi.example.com/api"). Leave empty to show a clear
-       "Backend API URL not configured" message instead of a dead request. -->
+  <!-- ===== BACKEND API URL =====
+       This is the REAL, existing FastAPI backend that runs on your machine at
+       127.0.0.1:8000 (see backend/app/main.py + config.py). There is NO public /
+       hosted backend — GitHub Pages is static and can never run FastAPI — so we do
+       NOT invent one. The frontend probes /api/health at runtime and reaches this
+       backend over loopback when the site is opened in the browser on the SAME
+       machine where the backend is running (your hackathon demo). -->
   <script>
-    window.BV_API_URL = "";  // <-- set your deployed FastAPI backend root here
+    window.BV_API_URL = "http://127.0.0.1:8000/api";
   </script>
 
   <script src="js/app.js"></script>

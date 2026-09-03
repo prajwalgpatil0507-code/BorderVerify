@@ -2,28 +2,69 @@
 "use strict";
 
 /* =================================================================== *
- * BACKEND API BASE URL  —  one configurable value, no hardcoded host.
+ * BACKEND API BASE URL  —  runtime discovery, no fabricated host.
  * =================================================================== *
- * GitHub Pages is STATIC and cannot run FastAPI, so the frontend must call a
- * separately-running FastAPI backend. The backend URL is configured in ONE place:
- * set `window.BV_API_URL` in frontend/index.html, e.g.:
+ * GitHub Pages is STATIC and cannot run FastAPI. The real backend runs locally
+ * (backend/app/main.py + config.py: API_PREFIX="/api", host 127.0.0.1:8000). A page
+ * served from GitHub Pages and opened in the SAME browser as a running local backend
+ * can reach it over loopback: modern browsers treat http://127.0.0.1 and
+ * http://localhost as "potentially trustworthy" origins, and the backend's CORS
+ * allow-list already includes this GitHub Pages origin + the localhost origins
+ * (backend/app/config.py).
  *
- *   window.BV_API_URL = "https://your-fastapi-backend.example.com/api";
- *
- * Rules enforced here:
- *   - No host is hardcoded in the bundle. On GitHub Pages, if window.BV_API_URL
- *     is not set, the app reports "Backend API URL not configured" instead of
- *     silently hitting a dead launch target.
- *   - No localhost / 127.0.0.1 is used for the deployed (GitHub Pages) build.
- *   - LOCAL DEV only: when FastAPI serves the SPA itself (uvicorn on port 8000),
- *     a same-origin "/api" reaches the API, so nothing is hardcoded.
+ * We PROBE every place the backend could be and use the first one that answers
+ * /api/health. There is NO hardcoded public URL — a static host has no public
+ * backend, and we never invent one. This makes login + the whole app work on GitHub
+ * Pages for a presenter-run demo (backend on the same machine), and fails fast (no
+ * "Signing in…" stuck state) when nothing is reachable.
  * =================================================================== */
-const IS_GITHUB_PAGES = /\.github\.io$/.test(location.hostname);
-const API_BASE_URL =
-  window.BV_API_URL ||              // configured backend (set in index.html)
-  (IS_GITHUB_PAGES ? "" : "/api");  // GitHub Pages: must be configured; else same-origin
 
-const API = API_BASE_URL;
+const BACKEND_CANDIDATES = [];
+if (window.BV_API_URL) BACKEND_CANDIDATES.push(String(window.BV_API_URL));
+BACKEND_CANDIDATES.push("/api");                      // local: FastAPI serves the SPA
+BACKEND_CANDIDATES.push("http://127.0.0.1:8000/api"); // local backend (loopback demo)
+BACKEND_CANDIDATES.push("http://localhost:8000/api"); // local backend (loopback alias)
+
+let API = ""; // resolved backend base — set only when a candidate answers /health
+
+function setBackendStatus(msg, cls) {
+  const el = document.getElementById("backend-status");
+  if (el) { el.textContent = msg; el.className = "login-msg" + (cls ? " " + cls : ""); }
+}
+
+// Resolve the candidate base if it answers GET {base}/health with status ok.
+function probeBackend(base) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 3000);
+  return fetch(base + "/health", { cache: "no-store", headers: { Accept: "application/json" }, signal: ctrl.signal })
+    .then(async res => {
+      if (!res.ok) return null;
+      const j = await res.json().catch(() => ({}));
+      return j && j.status === "ok" ? base : null;
+    })
+    .catch(() => null)
+    .finally(() => clearTimeout(t));
+}
+
+async function discoverBackend() {
+  setBackendStatus("Connecting to backend…", "info");
+  const seen = [];
+  for (const c of BACKEND_CANDIDATES) if (c && seen.indexOf(c) < 0) seen.push(c);
+  if (!seen.length) { API = ""; setBackendStatus("Backend not reachable."); return ""; }
+  // Probe all candidates concurrently; adopt the first healthy one. When the
+  // backend is up the loopback candidate answers in ms, so the login button never
+  // hangs; when every candidate is down we resolve fast with a clear message.
+  await Promise.all(seen.map(base => probeBackend(base).then(ok => {
+    if (ok && !API) { API = ok; setBackendStatus("Backend connected", "success"); }
+  })));
+  if (!API) {
+    API = "";
+    setBackendStatus("Backend not reachable. Start the FastAPI backend (backend/ on 127.0.0.1:8000) and open this site in the browser on that same machine, then refresh.", "");
+  }
+  return API;
+}
+
+const backendReady = discoverBackend().catch(() => "");
 
 const state = {
   token: localStorage.getItem("bv_token") || null,
@@ -98,10 +139,12 @@ function toast(msg, isError) {
 const NETWORK_TIMEOUT_MS = 15000;
 
 async function api(path, options = {}) {
-  // An empty base on a static GitHub Pages deploy means the backend URL was not
-  // configured yet. Surface that clearly instead of fetching a bogus path.
+  // Wait for backend discovery first (it probes /api/health on every candidate).
+  // This prevents a "Signing in…" hang: discovery resolves in ms when the backend
+  // is up and rejects fast when none is reachable, instead of fetching a dead URL.
+  await backendReady;
   if (!API) {
-    throw new Error("Backend API URL not configured. This static GitHub Pages site cannot reach FastAPI — set window.BV_API_URL in frontend/index.html to a running backend, then redeploy.");
+    throw new Error("Backend not reachable. Start the FastAPI backend (backend/ on 127.0.0.1:8000) and open this site in the browser on that same machine, then refresh.");
   }
   const headers = options.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
@@ -1394,6 +1437,8 @@ window.addEventListener("load", () => {
     const user = $("#login-user").value.trim();
     const pass = $("#login-pass").value;
     msg.className = "login-msg info"; msg.textContent = "Signing in…";
+    // Ensure backend discovery has finished so the request URL + outcome are accurate.
+    await backendReady;
     console.log("[LOGIN] REQUEST URL:", API + "/auth/login");
     console.log("[LOGIN] REQUEST METHOD: POST");
     console.log("[LOGIN] REQUEST STARTED", new Date().toISOString());
@@ -1414,17 +1459,10 @@ window.addEventListener("load", () => {
     }
   });
   $("#logout-btn").onclick = () => logout(false);
-  // On a static GitHub Pages build with no backend configured, tell the officer
-  // UP FRONT (before any click) that a running FastAPI backend is required.
-  // Login never hangs: api() throws fast when the base is empty, and the submit
-  // handler replaces this message with the actual result.
-  if (!API) {
-    const msg = $("#login-msg");
-    if (msg) {
-      msg.className = "login-msg";
-      msg.textContent = "Backend not reachable: this GitHub Pages site is static and has no FastAPI backend configured. Set window.BV_API_URL in frontend/index.html to a running backend, then redeploy. Login will not hang — it reports this instead.";
-    }
-  }
+  // The backend connection status (Connecting / Connected / Not reachable) is set
+  // by discoverBackend() on the dedicated #backend-status element, so the login
+  // card never shows a misleading "backend required" banner before the runtime
+  // probe has actually finished.
   try {
     route();
   } catch (err) { showFatal(err); }
