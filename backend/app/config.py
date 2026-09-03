@@ -114,8 +114,11 @@ class Settings:
         "duplicate_identity": 40,
         "blacklist": 70,
         "document_type_suspect": 15,
-        "passport_not_found": 40,   # document number absent from the reference DB
-        "document_anomaly": 20,     # inconsistent / suspicious document in the DB
+        "passport_not_found": 40,        # document number absent from the reference DB
+        "passport_field_mismatch": 45,   # found in DB but extracted identity fields conflict
+        "document_anomaly": 20,          # inconsistent / suspicious document in the DB
+        "image_quality_low": 12,         # image too blurry / dark / low-res to read reliably
+        "liveness_not_live": 60,         # strong screen/print replay cue on a live capture
     }
     RISK_THRESHOLD_MEDIUM: int = int(os.getenv("RISK_THRESHOLD_MEDIUM", "30"))
     RISK_THRESHOLD_HIGH: int = int(os.getenv("RISK_THRESHOLD_HIGH", "61"))

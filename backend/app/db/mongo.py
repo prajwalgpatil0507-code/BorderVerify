@@ -115,3 +115,75 @@ def counts() -> dict:
         "identity_records": db.identity_records.estimated_document_count(),
         "verification_records": db.verification_records.estimated_document_count(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Verification-record persistence (MongoDB is the durable history store)
+# ---------------------------------------------------------------------------
+# Verification history is mirrored into MongoDB so it survives container
+# redeploys (where an ephemeral local SQLite file would be lost) and can be read
+# back after a full refresh / restart.  SQLite remains the offline/fallback store.
+
+def _iso(value) -> str:
+    """Best-effort ISO string coercion for a datetime."""
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def persist_verification(doc: dict) -> None:
+    """Upsert a verification record into ``verification_records``.
+
+    Keyed on ``verification_id`` so re-verifying the same session simply updates
+    the record rather than creating a confusing duplicate.  Never raises: a
+    failure here must not break an already-successful verification.
+    """
+    vid = doc.get("verification_id")
+    if vid is None:
+        return
+    col = get_collection("verification_records")
+    col.update_one(
+        {"verification_id": int(vid)},
+        {"$set": doc},
+        upsert=True,
+    )
+
+
+def find_verification(vid: int):
+    """Return a full verification record (result snapshot) or ``None``."""
+    col = get_collection("verification_records")
+    rec = col.find_one({"verification_id": int(vid)})
+    if not rec:
+        return None
+    import copy
+    result = copy.deepcopy(rec.get("result") or {})
+    result["verification_id"] = rec.get("verification_id")
+    result["image_url"] = result.get("image_url") or rec.get("image_url") or ""
+    result["live_photo_url"] = result.get("live_photo_url") or rec.get("live_photo_url") or ""
+    return result
+
+
+def list_verifications(limit: int = 50) -> list[dict]:
+    """Return the most-recent verification summaries (history page shape)."""
+    col = get_collection("verification_records")
+    rows = col.find({}, {"_id": 0}).sort("created_at", -1).limit(int(limit))
+    return [_verification_summary(r) for r in rows]
+
+
+def _verification_summary(rec: dict) -> dict:
+    result = rec.get("result") or {}
+    return {
+        "id": rec.get("verification_id"),
+        "method": rec.get("method", "upload"),
+        "passenger_name": rec.get("passenger_name", ""),
+        "document_number": rec.get("document_number", ""),
+        "document_type": rec.get("document_type", "passport"),
+        "nationality": rec.get("nationality", ""),
+        "risk_score": rec.get("risk_score", 0),
+        "risk_level": rec.get("risk_level", "LOW"),
+        "decision": rec.get("decision", "VERIFIED"),
+        "verification_status": rec.get("verification_status") or result.get("verification_status", ""),
+        "created_at": _iso(rec.get("created_at")),
+    }

@@ -49,6 +49,13 @@ app.include_router(database_router.router, prefix=API)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    # Seed the reference registry so a real upload can genuinely match a record.
+    try:
+        from .db.seed import seed_reference_data
+        seed_reference_data()
+    except Exception as exc:  # noqa: BLE001 - never block startup on seeding
+        import logging
+        logging.getLogger("borderverify").warning("Reference seed failed: %s", exc)
     # Best-effort: create Mongo indexes if the demo database is reachable.
     try:
         if mongo_db.mongo_available():

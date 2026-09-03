@@ -40,6 +40,10 @@ class VerifyRequest(BaseModel):
         None, description="Optional passport photo / live photo filename")
     document_type: str = Field("auto", description="auto | passport | visa")
     provided_photo_filename: Optional[str] = None
+    live_photo_filename: Optional[str] = Field(
+        None, description="Optional live-captured applicant photo filename "
+                          "(shown on the result page in the 'Live Captured Photo' card)")
+    method: str = Field("upload", description="upload | live_camera | demo | synthetic")
     # Optional manual passenger attributes (form data)
     full_name: Optional[str] = None
     date_of_birth: Optional[str] = None

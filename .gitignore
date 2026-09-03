@@ -27,9 +27,6 @@ data/*.db
 backend/server.log
 *.log
 
-# Large pre-trained model (downloaded locally by _download_arcface.py)
-backend/arcface_w600k_r50.onnx
-
 # Frontend build artifacts
 node_modules/
 dist/

@@ -53,6 +53,7 @@ const ICO = {
   chevDown: '<path d="M6 9l6 6 6-6"/>',
   warning: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  cam: '<path d="M3 7a2 2 0 0 1 2-2h2l1.5-2h7L17 5h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="4"/>',
 };
 function ic(name, cls) {
   return `<svg class="${cls || ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICO[name] || ICO.info}</svg>`;
@@ -114,6 +115,9 @@ function route() {
   const page = parts[0] || "dashboard";
   if (!state.token) { show("login-view"); hide("app-view"); return; }
   show("app-view"); hide("login-view");
+
+  // Release the camera stream when navigating away from the verify page.
+  if (page !== "verify") stopCamera();
 
   const nav = document.querySelectorAll(".nav-item");
   nav.forEach(n => n.classList.toggle("active", n.dataset.route === page));
@@ -180,13 +184,20 @@ async function renderDashboard() {
 
 function row(r) {
   const cls = r.risk_level === "HIGH" ? "badge-red" : r.risk_level === "MEDIUM" ? "badge-yellow" : "badge-green";
+  const status = r.verification_status || r.decision || "";
   return `<tr data-id="${r.id}">
     <td>#${r.id}</td><td>${esc(r.passenger_name) || "-"}</td>
-    <td>${esc(r.document_number) || "-"} <span class="muted">(${esc(r.document_type)})</span></td>
+    <td>${esc(r.document_number) || "-"} <span class="muted">(${esc(r.document_type)})</span> ${methodChip(r.method)}</td>
     <td>${esc(r.nationality)}</td>
     <td><span class="badge ${cls}">${r.risk_score}</span></td>
-    <td>${verdictBadge(r.decision)}</td>
+    <td>${verdictBadge(status)}</td>
     <td class="muted">${fmtTime(r.created_at)}</td></tr>`;
+}
+function methodChip(m) {
+  if (!m) return "";
+  const label = m === "live_camera" ? "Cam" : m === "demo" ? "Demo" : m === "synthetic" ? "Synth" : "Upload";
+  const cls = m === "live_camera" ? "badge-blue" : "badge-gray";
+  return `<span class="badge ${cls}" title="${esc(m)}">${esc(label)}</span>`;
 }
 function wireHistoryRows() {
   document.querySelectorAll("tbody tr[data-id]").forEach(tr => {
@@ -196,7 +207,10 @@ function wireHistoryRows() {
 }
 
 function verdictBadge(decision) {
-  const cls = decision === "VERIFIED" ? "badge-green" : decision === "HIGH RISK" ? "badge-red" : "badge-yellow";
+  const d = (decision || "").toUpperCase();
+  const cls = d === "VERIFIED" ? "badge-green"
+    : (d === "NOT_VERIFIED" || d === "NOT VERIFIED" || d === "HIGH RISK") ? "badge-red"
+    : "badge-yellow";
   return `<span class="badge ${cls}">${esc(decision)}</span>`;
 }
 function fmtTime(iso) { try { return new Date(iso).toLocaleString(); } catch (e) { return iso || "-"; } }
@@ -311,6 +325,28 @@ async function renderVerify() {
     </div>
 
     <div class="card mt">
+      <div class="card-title">${ic("cam", "tt-ico")} Live Camera Verification <span class="badge badge-blue">real-time</span></div>
+      <p class="muted mb">Upload the document above first. Then start the camera, point it at the applicant's live face, and select <b>Capture Face &amp; Verify</b>. The face is verified against the uploaded document through the <b>same OCR + database pipeline</b> as an upload.</p>
+      <div class="cam-wrap">
+        <div id="cam-stage" class="cam-stage">
+          <video id="cam-video" autoplay playsinline muted></video>
+          <div id="cam-frame" class="cam-frame">
+            <div class="cam-corner tl"></div><div class="cam-corner tr"></div>
+            <div class="cam-corner bl"></div><div class="cam-corner br"></div>
+            <div class="cam-hint">FACE<br>IN<br>FRAME</div>
+          </div>
+        </div>
+        <div class="cam-status" id="cam-status">Camera is off. Start the camera to begin.</div>
+        <div class="cam-actions">
+          <button id="cam-start" class="btn btn-primary">${ic("cam")} Start Camera</button>
+          <button id="cam-face" class="btn btn-primary" disabled>${ic("face")} Capture Face &amp; Verify</button>
+          <button id="cam-stop" class="btn btn-ghost" disabled>${ic("close")} Stop</button>
+        </div>
+        <div id="cam-error" class="muted" style="font-size:12px;color:var(--red);margin-top:8px"></div>
+      </div>
+    </div>
+
+    <div class="card mt">
       <div class="card-title">${ic("list", "tt-ico")} Quick Demo Cases <span class="badge badge-gray">SIH scenarios</span></div>
       <p class="muted mb">Run a predefined scenario end-to-end with synthetic data. No upload required.</p>
       <div class="demo-cases">
@@ -353,6 +389,9 @@ async function renderVerify() {
   $("#run-verify").onclick = runImageVerify;
   document.querySelectorAll(".demo-btn[data-demo]").forEach(b => b.onclick = () => runDemo(b.dataset.demo));
   document.querySelectorAll(".demo-btn[data-synth]").forEach(b => b.onclick = () => runSynthetic(b.dataset.synth));
+  const cs = $("#cam-start"); if (cs) cs.onclick = startCamera;
+  const cf = $("#cam-face"); if (cf) cf.onclick = captureFaceAndVerify;
+  const cp = $("#cam-stop"); if (cp) cp.onclick = stopCamera;
 
   // Rehydrate any in-memory state (uploaded document, doc type, running flag)
   // so navigating away and back to this page does not lose the current work.
@@ -442,7 +481,7 @@ async function runImageVerify() {
     const result = await api("/verify/document", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, document_type: docType })
+      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, live_photo_filename: prov, document_type: docType, method: "upload" })
     });
     cacheResult(result);
     verifyState.running = false;
@@ -495,8 +534,259 @@ async function runSynthetic(syntheticId) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Live Camera Verification
+ * ------------------------------------------------------------------ */
+const camState = { stream: null, active: false };
+
+function setCamStatus(msg, cls) {
+  const s = $("#cam-status");
+  if (s) { s.textContent = msg; s.className = "cam-status" + (cls ? " " + cls : ""); }
+}
+function setCamError(msg) {
+  const e = $("#cam-error");
+  if (e) e.textContent = msg || "";
+}
+function setCamButtons(running, streamOn) {
+  const st = $("#cam-start"), sp = $("#cam-stop"), cf = $("#cam-face");
+  if (st) st.disabled = streamOn;
+  if (cf) cf.disabled = !streamOn || running;
+  if (sp) sp.disabled = !streamOn;
+}
+function stopCamera() {
+  if (camState.stream) { camState.stream.getTracks().forEach(t => t.stop()); camState.stream = null; }
+  camState.active = false;
+  const v = $("#cam-video"); if (v) v.srcObject = null;
+  const fr = $("#cam-frame"); if (fr) fr.classList.remove("detected");
+  setCamStatus("Camera is off. Start the camera to begin.");
+  setCamButtons(false, false);
+}
+async function startCamera() {
+  setCamError("");
+  const video = $("#cam-video");
+  if (!video) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setCamStatus("Camera unavailable in this browser. You can verify by uploading a document instead.", "err");
+    setCamError("Camera unavailable. You can verify by uploading a document instead.");
+    toast("Camera not supported — use upload instead.", true);
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    camState.stream = stream;
+    camState.active = true;
+    video.srcObject = stream;
+    setCamStatus("Position the applicant's face inside the frame", "live");
+    setCamButtons(false, true);
+  } catch (err) {
+    const name = (err && err.name) || "";
+    if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+      setCamStatus("Camera permission denied.", "err");
+      setCamError("Camera access was denied. You can verify by uploading a document instead.");
+      toast("Camera permission denied", true);
+    } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      setCamStatus("No camera found.", "err");
+      setCamError("Camera unavailable. You can verify by uploading a document instead.");
+      toast("No camera found", true);
+    } else {
+      setCamStatus("Camera could not be opened.", "err");
+      setCamError("Camera unavailable (" + name + "). You can verify by uploading a document instead.");
+      toast("Camera error: " + name, true);
+    }
+    setCamButtons(false, false);
+  }
+}
+
+// Reject a clearly empty/blurry/tiny frame instead of submitting garbage to the
+// real verification pipeline. Camera detection is only the capture stage; the
+// verdict still comes from OCR + the reference database look-up.
+async function frameQualityCheck(canvas) {
+  try {
+    const ctx = canvas.getContext("2d");
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let sum = 0, sumSq = 0;
+    const n = data.length / 4;
+    for (let i = 0; i < data.length; i += 4) {
+      const g = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      sum += g; sumSq += g * g;
+    }
+    const mean = sum / n;
+    const variance = (sumSq / n) - mean * mean;
+    return { ok: variance > 200, variance, mean };
+  } catch (e) { return { ok: true }; }
+}
+
+async function captureFaceAndVerify() {
+  const video = $("#cam-video");
+  if (!video || !camState.stream) return;
+  if (!verifyState.docFile) {
+    setCamStatus("Upload a travel document first.", "err");
+    setCamError("Upload a travel document above before capturing the face.");
+    toast("Please upload a travel document first", true);
+    return;
+  }
+  setCamStatus("Capturing live photo…", "scanning");
+  setCamButtons(true, true);
+  try {
+    // The document ALWAYS comes from the external file upload - never from the
+    // camera. Only the applicant's live face is captured here.
+    const df = new FormData(); df.append("file", verifyState.docFile);
+    const upDoc = await api("/upload-document", { method: "POST", body: df });
+
+    const W = video.videoWidth, H = video.videoHeight;
+    if (!W || !H) throw new Error("No video frame");
+    const canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    canvas.getContext("2d").drawImage(video, 0, 0, W, H);
+    const q = await frameQualityCheck(canvas);
+    if (!q.ok) {
+      setCamStatus("Live photo unclear — reposition and hold steady", "err");
+      setCamButtons(false, true);
+      toast("Live photo too unclear — try again", true);
+      return;
+    }
+    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.9));
+    if (!blob) throw new Error("Could not encode face frame");
+    const file = new File([blob], "camera_face_" + Date.now() + ".jpg", { type: "image/jpeg" });
+    const fd = new FormData(); fd.append("file", file);
+    const upFace = await api("/upload-photo", { method: "POST", body: fd });
+
+    const docType = $("#doc-type").value || "auto";
+    verifyState.docType = docType;
+    const result = await api("/verify/document", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_filename: upDoc.filename, reference_photo_filename: null, provided_photo_filename: upFace.filename, live_photo_filename: upFace.filename, document_type: docType, method: "live_camera" })
+    });
+    stopCamera();
+    cacheResult(result);
+    verifyState.activeId = result.verification_id;
+    verifyState.lastResult = result;
+    localStorage.setItem(LS_VID, String(result.verification_id));
+    setCamStatus("Verification complete", "done");
+    go("#/result/" + result.verification_id);
+  } catch (e) {
+    setCamStatus("Capture failed: " + e.message, "err");
+    setCamButtons(false, true);
+    toast("Camera verification failed: " + e.message, true);
+  }
+}
+
 function cacheResult(result) {
   state.results[result.verification_id] = result;
+}
+
+/* Render the two image cards side by side: the uploaded/captured document image
+ * and the live-captured applicant photo. The live photo is optional - when a
+ * verification has no live photo it shows a clean empty state instead of a
+ * placeholder/fake image. */
+function imageCards(result) {
+  const docImg = result.image_url || "";
+  const liveImg = result.live_photo_url || "";
+  const method = result.method || "upload";
+  const isDemo = method === "demo" || result.backend === "synthetic-image" || method === "synthetic";
+  const docCap = isDemo ? "Synthetic demo document (fictional)." : "Uploaded document.";
+  const liveCap = liveImg ? "Photo captured by camera / applicant." : "No live photo captured.";
+  return `<div class="img-grid">
+    <div class="card mb">
+      <div class="card-title">${ic("doc", "tt-ico")} Document Image</div>
+      ${docImg ? `<img class="doc-image" src="${esc(docImg)}" alt="document">` : `<div class="img-empty"><div class="es-ico">${ic("doc")}</div><div>No document image</div></div>`}
+      <div class="muted mt" style="font-size:11.5px">${docCap}</div>
+    </div>
+    <div class="card mb">
+      <div class="card-title">${ic("cam", "tt-ico")} Live Captured Photo</div>
+      ${liveImg ? `<img class="doc-image" src="${esc(liveImg)}" alt="live photo">` : `<div class="img-empty"><div class="es-ico">${ic("cam")}</div><div>No live photo captured</div></div>`}
+      <div class="muted mt" style="font-size:11.5px">${liveCap}</div>
+    </div>
+  </div>`;
+}
+
+/* A PASS / FAIL / REVIEW / N/A pill used by the per-check summary. */
+function statePill(state, label) {
+  const map = {
+    pass:    { c: "#1f9d55", t: "PASS" },
+    fail:    { c: "#c5282f", t: "FAIL" },
+    review:  { c: "#d59000", t: "REVIEW" },
+    na:      { c: "#8a93a3", t: "N/A" },
+    unknown: { c: "#8a93a3", t: "UNKNOWN" },
+  };
+  const m = map[state] || map.na;
+  return `<span class="check-pill"><span class="dot" style="background:${m.c}"></span>${esc(label)} <b style="font-size:11px">${m.t}</b></span>`;
+}
+
+function summaryRow(name, pill) {
+  return `<div class="summary-row"><span class="k">${esc(name)}</span>${pill}</div>`;
+}
+
+/* One compact summary strip: OCR · MRZ · Database · Face · Liveness · Tamper. */
+function checksStrip(result) {
+  const ocr = result.ocr || {};
+  const fl = result.extracted_fields || {};
+  const hasFields = Object.values(fl).some(v => v && v.value);
+  const conf = parseFloat(ocr.confidence) || 0;
+  const ocrState = !hasFields ? "fail" : (conf < 0.5 ? "review" : "pass");
+
+  const mrz = result.mrz;
+  const mrzOk = result.mrz_checksum_valid;
+  const mrzState = !mrz ? "na" : (mrzOk ? "pass" : "fail");
+
+  const dm = result.database_match || {};
+  const dbState = dm.status === "MATCH" ? "pass" : (dm.status === "CONFLICT" ? "fail" : "review");
+
+  const face = result.face || {};
+  const faceState = face.status === "match" ? "pass" : (face.status === "mismatch" ? "fail" : (face.status === "review" ? "review" : "na"));
+
+  const live = result.liveness || {};
+  const liveState = live.status === "live" ? "pass" : (live.status === "spoof_suspected" ? "fail" : (live.status === "not_applicable" ? "na" : "review"));
+
+  const tamper = result.tamper || {};
+  const tamperState = tamper.risk_level === "high" ? "fail" : (tamper.risk_level === "medium" ? "review" : (tamper.risk_level ? "pass" : "na"));
+
+  return `<div class="card mb">
+    <div class="card-title">${ic("shield", "tt-ico")} Verification Checks</div>
+    ${summaryRow("OCR", statePill(ocrState, "conf " + conf.toFixed(2)))}
+    ${summaryRow("MRZ", statePill(mrzState, mrz ? (mrzOk ? "checksum valid" : "checksum invalid") : "no MRZ zone"))}
+    ${summaryRow("Database", statePill(dbState, (dm.status || "NOT_FOUND").toLowerCase()))}
+    ${summaryRow("Face", statePill(faceState, face.status === "no_face" ? "no face" : (Math.round((face.score || 0) * 100) + "% similarity")))}
+    ${summaryRow("Liveness", statePill(liveState, (live.status || "unknown").replace(/_/g, " ")))}
+    ${summaryRow("Tamper", statePill(tamperState, (tamper.risk_level || "na") + " risk"))}
+  </div>`;
+}
+
+/* Document-image quality + supported-document check card. */
+function docQCard(result) {
+  const da = result.document_analysis;
+  if (!da) return `<div class="card"><div class="card-title">${ic("doc", "tt-ico")} Document Analysis</div><p class="muted">Not performed for this record.</p></div>`;
+  const grade = da.quality_grade || "poor";
+  const gcls = grade === "good" ? "badge-green" : grade === "moderate" ? "badge-yellow" : "badge-red";
+  const sup = da.supported;
+  const scls = sup ? "badge-green" : "badge-red";
+  const rows = Object.entries(da.scores || {}).map(([k, v]) => detail(esc(k.replace(/_/g, " ")), (Number(v) || 0).toFixed(0) + "/100")).join("");
+  const reasons = (da.support_reasons || []).map(r => `<li>${esc(r)}</li>`).join("");
+  return `<div class="card"><div class="card-title">${ic("doc", "tt-ico")} Document Analysis <span class="badge ${gcls}">${esc(grade.toUpperCase())}</span></div>
+    ${detail("Supported document", sup ? "YES" : "NO")}
+    ${detail("Document type", esc(da.doc_type || "-"))}
+    ${detail("Quality score", (Number(da.quality_score) || 0).toFixed(0) + "/100")}
+    ${detail("Readable", da.readability ? "YES" : "NO")}
+    ${rows}
+    ${reasons ? `<div class="mt"><span class="badge ${scls}">${sup ? "LAYOUT FOUND" : "NO SUPPORTED DOC"}</span></div>
+      <div class="mt"><div class="pre-line muted" style="font-size:11.5px">${reasons}</div></div>` : ""}
+  </div>`;
+}
+
+/* Liveness (passive anti-spoof) card. */
+function livenessCard(result) {
+  const lv = result.liveness;
+  if (!lv) return `<div class="card"><div class="card-title">${ic("cam", "tt-ico")} Liveness</div><p class="muted">Not performed for this record.</p></div>`;
+  const s = (lv.status || "unknown").toLowerCase();
+  const bcls = s === "live" ? "badge-green" : s === "spoof_suspected" ? "badge-red" : s === "not_applicable" ? "badge-gray" : "badge-yellow";
+  const label = s.replace(/_/g, " ").toUpperCase();
+  const scores = Object.entries(lv.scores || {}).map(([k, v]) => detail(esc(k.replace(/_/g, " ")), (Number(v) || 0).toFixed(1) + "/100")).join("");
+  return `<div class="card"><div class="card-title">${ic("cam", "tt-ico")} Liveness <span class="badge ${bcls}">${esc(label)}</span></div>
+    ${detail("Confidence", (Number(lv.confidence) || 0).toFixed(2))}
+    ${scores}
+    ${lv.note ? `<div class="pre-line muted" style="font-size:11.5px;margin-top:8px">${esc(lv.note)}</div>` : ""}
+  </div>`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -513,9 +803,13 @@ async function renderResult(id) {
   }
   const risk = result.risk || {};
   const decision = risk.decision || "REVIEW REQUIRED";
+  const vstatus = result.verification_status || (decision === "VERIFIED" ? "VERIFIED" : decision === "HIGH RISK" ? "NOT_VERIFIED" : "UNVERIFIED");
+  const vreason = result.verification_reason || "";
+  const method = result.method || "upload";
+  const methodLabel = method === "live_camera" ? "Live Camera" : method === "demo" ? "Quick Demo" : method === "synthetic" ? "Synthetic Demo" : "Document Upload";
   const docImg = result.image_url || "";
   const rcls = risk.level === "HIGH" ? "badge-red" : risk.level === "MEDIUM" ? "badge-yellow" : "badge-green";
-  const vcls = decision === "VERIFIED" ? "v-verified" : decision === "HIGH RISK" ? "v-high" : "v-review";
+  const vcls = vstatus === "VERIFIED" ? "v-verified" : (vstatus === "NOT_VERIFIED" || vstatus === "NOT VERIFIED") ? "v-high" : "v-review";
   const meterColor = risk.level === "HIGH" ? "var(--red)" : risk.level === "MEDIUM" ? "var(--yellow)" : "var(--green)";
   const docTypeLabel = (result.synthetic_label || (result.document_type || "passport").toUpperCase());
 
@@ -525,36 +819,40 @@ async function renderResult(id) {
         <div class="flex"><span class="badge ${rcls}">RISK ${risk.score} / 100</span>
           <span class="badge badge-blue">${esc(docTypeLabel)}</span>
           ${result.backend === "mongodb" ? `<span class="badge badge-green" title="Result driven by a lookup in the MongoDB reference database">DATABASE VERIFICATION</span>` : ""}
-          ${result.backend === "synthetic-image" ? `<span class="badge badge-blue" title="Heuristic image-based document authenticity analysis">SYNTHETIC DOC DEMO</span>` : ""}</div>
+          ${result.backend === "synthetic-image" ? `<span class="badge badge-blue" title="Heuristic image-based document authenticity analysis">SYNTHETIC DOC DEMO</span>` : ""}
+          <span class="badge badge-gray" title="Verification method">${esc(methodLabel)}</span>
+          ${method === "live_camera" ? `<span class="badge badge-blue">LIVE CAMERA</span>` : ""}</div>
         <h2 style="margin-top:12px">Verification #${id}</h2>
         <p class="crumb mt">${esc(result.passenger?.full_name || "Unknown passenger")} · ${esc(result.passenger?.document_number||"-")}</p>
       </div>
       <div class="result-verdict">
-        <div class="verdict-badge ${vcls}">${esc(decision)}</div>
+        <div class="verdict-badge ${vcls}">${esc(vstatus)}</div>
         <div class="risk-big" style="justify-content:center"><span class="score-num" style="color:${meterColor}">${risk.score}</span><span class="score-max">/100</span></div>
         <div class="muted">${risk.level} risk</div>
       </div>
     </div>
 
+    ${vreason ? `<div class="card mb" style="border:1px solid ${meterColor}33;padding:12px 16px"><b>Verification outcome:</b> ${esc(vstatus)} — ${esc(vreason)}</div>` : ""}
+
     <div class="result-layout">
       <div>
-        <div class="card mb">
-          <div class="card-title">${ic("doc", "tt-ico")} Document Image</div>
-          ${docImg ? `<img class="doc-image" src="${esc(docImg)}" alt="document">` : `<div class="muted">No image.</div>`}
-          <div class="muted mt" style="font-size:11.5px">${result.backend === "synthetic-image" ? "Synthetic demo document (fictional)." : "Sample/uploaded document for demonstration."}</div>
-        </div>
+        ${imageCards(result)}
       </div>
       <div>
         ${whyCard(result)}
         <div class="section-grid">
           ${riskCard(result)}
           ${passengerCard(result.passenger)}
+          ${dbMatchCard(result)}
           ${sourceCard(result)}
           ${tamperCard(result)}
           ${ocrCard(result)}
           ${mrzCard(result)}
           ${crossCard(result)}
           ${faceCard(result)}
+          ${livenessCard(result)}
+          ${docQCard(result)}
+          ${checksStrip(result)}
           ${expiryCard(result)}
           ${watchCard(result)}
           ${dupCard(result)}
@@ -734,6 +1032,43 @@ function dupCard(result) {
   </div>`;
 }
 
+/* Reference-database match card: shows the matched record from the reference DB
+ * and (when present) exactly which identity fields conflict with it. */
+function dbMatchCard(result) {
+  const dm = result.database_match;
+  if (!dm) return "";
+  const status = dm.status || "NOT_FOUND";
+  const rec = dm.record || {};
+  const mism = dm.mismatched_fields || [];
+  const isMatch = status === "MATCH";
+  const isConflict = status === "CONFLICT";
+  const badge = isMatch ? "badge-green" : isConflict ? "badge-red" : "badge-yellow";
+  const statusText = isMatch ? "MATCH" : isConflict ? "CONFLICT" : "NOT FOUND";
+  const fancyDate = s => {
+    const t = String(s || "").replace(/[^0-9]/g, "");
+    if (t.length === 8) return `${t.slice(0,4)}-${t.slice(4,6)}-${t.slice(6,8)}`;
+    if (t.length === 6) return `20${t.slice(0,2)}-${t.slice(2,4)}-${t.slice(4,6)}`;
+    return s || "-";
+  };
+  const recKeys = ["surname", "given_names", "nationality", "date_of_birth",
+                   "date_of_expiry", "issuing_country", "status"];
+  const recRows = recKeys.filter(k => {
+    const v = rec[k];
+    return v !== "" && v !== null && v !== undefined && v !== false;
+  }).map(k => detail(esc(k.replace(/_/g, " ")),
+                     k.includes("date") ? esc(fancyDate(rec[k])) : esc(String(rec[k])))).join("");
+  const mismRows = mism.length
+    ? mism.map(m => `<div class="detail"><span class="k">${esc(m.field.replace(/_/g," "))}</span><span class="v">extracted: ${esc(String(m.extracted))} · DB: ${esc(String(m.reference))}</span></div>`).join("")
+    : "";
+  return `<div class="card"><div class="card-title">${ic("db","tt-ico")} Reference Database Match <span class="badge ${badge}">${statusText}</span></div>
+    <div class="detail"><span class="k">Document No.</span><span class="v">${esc(dm.document_number || "-")}</span></div>
+    ${isConflict ? `<div class="muted" style="font-size:11.5px">Matched a database record but the extracted identity fields conflict:</div>` : ""}
+    ${recRows}
+    ${mism.length ? `${mismRows}` : `<div class="mt"><span class="check-pill"><span class="dot" style="background:#1f9d55"></span>${isMatch ? "Identity fields aligned with the database record" : "No database record matched"}</span></div>`}
+    <p class="muted mt" style="font-size:11px">Matched record retrieved from reference database · simulated data, not a real government database</p>
+  </div>`;
+}
+
 function sourceCard(result) {
   const ds = result.data_source || "SIH SYNTHETIC DEMO DATABASE";
   const env = result.environment || "DEMO / MOCK";
@@ -758,9 +1093,13 @@ function sourceCard(result) {
 function restoredSessionHtml(result, id) {
   const risk = result.risk || {};
   const decision = risk.decision || "REVIEW REQUIRED";
+  const vstatus = result.verification_status || (decision === "VERIFIED" ? "VERIFIED" : decision === "HIGH RISK" ? "NOT_VERIFIED" : "UNVERIFIED");
+  const vreason = result.verification_reason || "";
+  const method = result.method || "upload";
+  const methodLabel = method === "live_camera" ? "Live Camera" : method === "demo" ? "Quick Demo" : method === "synthetic" ? "Synthetic Demo" : "Document Upload";
   const docImg = result.image_url || "";
   const rcls = risk.level === "HIGH" ? "badge-red" : risk.level === "MEDIUM" ? "badge-yellow" : "badge-green";
-  const vcls = decision === "VERIFIED" ? "v-verified" : decision === "HIGH RISK" ? "v-high" : "v-review";
+  const vcls = vstatus === "VERIFIED" ? "v-verified" : (vstatus === "NOT_VERIFIED" || vstatus === "NOT VERIFIED") ? "v-high" : "v-review";
   const meterColor = risk.level === "HIGH" ? "var(--red)" : risk.level === "MEDIUM" ? "var(--yellow)" : "var(--green)";
   const docTypeLabel = (result.synthetic_label || (result.document_type || "passport").toUpperCase());
   return `
@@ -774,35 +1113,38 @@ function restoredSessionHtml(result, id) {
         <div class="flex"><span class="badge ${rcls}">RISK ${risk.score} / 100</span>
           <span class="badge badge-blue">${esc(docTypeLabel)}</span>
           ${result.backend === "mongodb" ? `<span class="badge badge-green" title="Result driven by a lookup in the MongoDB reference database">DATABASE VERIFICATION</span>` : ""}
-          ${result.backend === "synthetic-image" ? `<span class="badge badge-blue" title="Heuristic image-based document authenticity analysis">SYNTHETIC DOC DEMO</span>` : ""}</div>
+          ${result.backend === "synthetic-image" ? `<span class="badge badge-blue" title="Heuristic image-based document authenticity analysis">SYNTHETIC DOC DEMO</span>` : ""}
+          <span class="badge badge-gray" title="Verification method">${esc(methodLabel)}</span>
+          ${method === "live_camera" ? `<span class="badge badge-blue">LIVE CAMERA</span>` : ""}</div>
         <h2 style="margin-top:12px">Verification #${id}</h2>
         <p class="crumb mt">${esc(result.passenger?.full_name || "Unknown passenger")} · ${esc(result.passenger?.document_number||"-")}</p>
       </div>
       <div class="result-verdict">
-        <div class="verdict-badge ${vcls}">${esc(decision)}</div>
+        <div class="verdict-badge ${vcls}">${esc(vstatus)}</div>
         <div class="risk-big" style="justify-content:center"><span class="score-num" style="color:${meterColor}">${risk.score}</span><span class="score-max">/100</span></div>
         <div class="muted">${risk.level} risk</div>
       </div>
     </div>
+    ${vreason ? `<div class="card mb" style="border:1px solid ${meterColor}33;padding:12px 16px"><b>Verification outcome:</b> ${esc(vstatus)} — ${esc(vreason)}</div>` : ""}
     <div class="result-layout">
       <div>
-        <div class="card mb">
-          <div class="card-title">${ic("doc", "tt-ico")} Document Image</div>
-          ${docImg ? `<img class="doc-image" src="${esc(docImg)}" alt="document">` : `<div class="muted">No image.</div>`}
-          <div class="muted mt" style="font-size:11.5px">${result.backend === "synthetic-image" ? "Synthetic demo document (fictional)." : "Sample/uploaded document for demonstration."}</div>
-        </div>
+        ${imageCards(result)}
       </div>
       <div>
         ${whyCard(result)}
         <div class="section-grid">
           ${riskCard(result)}
           ${passengerCard(result.passenger)}
+          ${dbMatchCard(result)}
           ${sourceCard(result)}
           ${tamperCard(result)}
           ${ocrCard(result)}
           ${mrzCard(result)}
           ${crossCard(result)}
           ${faceCard(result)}
+          ${livenessCard(result)}
+          ${docQCard(result)}
+          ${checksStrip(result)}
           ${expiryCard(result)}
           ${watchCard(result)}
           ${dupCard(result)}

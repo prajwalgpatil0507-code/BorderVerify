@@ -94,8 +94,14 @@ def score(active_signals: dict) -> RiskResult:
             reason = "Document type / format is inconsistent or suspect."
         elif signal == "passport_not_found":
             reason = "Document number was not found in the reference database."
+        elif signal == "passport_field_mismatch":
+            reason = "Extracted identity fields conflict with the reference database record."
         elif signal == "document_anomaly":
             reason = "Document status / record flag indicates an anomaly."
+        elif signal == "image_quality_low":
+            reason = "Image quality is too poor (blur / dark / low resolution) to read reliably."
+        elif signal == "liveness_not_live":
+            reason = "Strong screen/print replay cue detected on the live capture."
 
         if active:
             contributions.append(RiskContribution(signal, weight, True, reason))

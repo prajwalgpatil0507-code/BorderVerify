@@ -56,6 +56,9 @@ class VerificationSession(Base):
     image_filename: Mapped[str] = mapped_column(String(255), default="")
     reference_photo_filename: Mapped[str] = mapped_column(String(255), default="")
 
+    # Verification method (upload | live_camera | demo | synthetic)
+    method: Mapped[str] = mapped_column(String(30), default="upload")
+
     # Full structured result (JSON snapshot for audit / display)
     result_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -68,6 +71,7 @@ class VerificationSession(Base):
     def to_summary(self) -> dict:
         return {
             "id": self.id,
+            "method": self.method,
             "passenger_name": self.passenger_name,
             "document_number": self.document_number,
             "document_type": self.document_type,
@@ -75,6 +79,7 @@ class VerificationSession(Base):
             "risk_score": self.risk_score,
             "risk_level": self.risk_level,
             "decision": self.decision,
+            "verification_status": (self.result_json or {}).get("verification_status", ""),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -244,11 +249,32 @@ engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
+def _ensure_schema_migrations(engine) -> None:
+    """Add columns introduced after the DB was first created (SQLite no-op ALTER).
+
+    ``Base.metadata.create_all`` only creates *missing* tables, it never alters
+    existing ones.  This applies the few additive columns we added late so an
+    existing development DB keeps working without being dropped.
+    """
+    from sqlalchemy import inspect, text
+    try:
+        insp = inspect(engine)
+        cols = {c["name"] for c in insp.get_columns("verification_sessions")}
+        if "method" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE verification_sessions ADD COLUMN method "
+                    "VARCHAR(30) DEFAULT 'upload'"))
+    except Exception:  # noqa: BLE001 - migrations are best-effort
+        pass
+
+
 def init_db() -> None:
     from ..core.security import hash_password
     from ..config import settings
     from . import models as _unused  # ensure models are registered
     Base.metadata.create_all(bind=engine)
+    _ensure_schema_migrations(engine)
     # Seed / upsert a default demo officer (credentials from config/env).
     with SessionLocal() as db:
         officer = db.query(Officer).filter(Officer.username == settings.DEMO_USERNAME).first()
