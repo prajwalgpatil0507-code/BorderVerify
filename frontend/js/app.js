@@ -66,9 +66,19 @@ async function discoverBackend() {
 
 const backendReady = discoverBackend().catch(() => "");
 
+// Storage access is wrapped so privacy modes / blocked cookies (where reading or
+// writing localStorage throws a SecurityError) never crash the app or blank the
+// page. This keeps the site opening normally on phones and locked-down browsers.
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
+function lsRemove(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
+function lsGetUser() {
+  try { return JSON.parse(lsGet("bv_user") || "null"); } catch (e) { return null; }
+}
+
 const state = {
-  token: localStorage.getItem("bv_token") || null,
-  user: JSON.parse(localStorage.getItem("bv_user") || "null"),
+  token: lsGet("bv_token"),
+  user: lsGetUser(),
   results: {},   // cache: id -> result
   uploads: {},   // name -> url for local display
 };
@@ -189,8 +199,8 @@ async function login(username, password) {
   const data = await api("/auth/login", { method: "POST", body });
   state.token = data.access_token;
   state.user = { username: data.username, role: data.role };
-  localStorage.setItem("bv_token", state.token);
-  localStorage.setItem("bv_user", JSON.stringify(state.user));
+  lsSet("bv_token", state.token);
+  lsSet("bv_user", JSON.stringify(state.user));
   const av = $("#officer-avatar");
   if (av) av.textContent = (data.username || "O").charAt(0).toUpperCase();
   $("#officer-name").textContent = data.username + "  ·  " + (data.role === "admin" ? "ADMIN" : "OFFICER");
@@ -198,8 +208,8 @@ async function login(username, password) {
 
 function logout(expired) {
   state.token = null; state.user = null;
-  localStorage.removeItem("bv_token");
-  localStorage.removeItem("bv_user");
+  lsRemove("bv_token");
+  lsRemove("bv_user");
   show("login-view");
   hide("app-view");
   if (expired) toast("Session expired", true);
@@ -513,7 +523,7 @@ async function renderVerify() {
   // Only the verification_id is kept on the frontend (localStorage); the actual
   // document image and all results are re-fetched from the existing DB record.
   if (!verifyState.lastResult && !verifyState.running) {
-    const vid = parseInt(localStorage.getItem(LS_VID) || "", 10);
+    const vid = parseInt(lsGet(LS_VID) || "", 10);
     if (vid) {
       c.insertAdjacentHTML("beforeend",
         `<div class="card mt" id="verify-restoring"><div class="loading-block"><span class="spinner"></span> Restoring previous verification session…</div></div>`);
@@ -529,7 +539,7 @@ async function renderVerify() {
           renderDocPreviewEl(result.image_url, "Restored document", "");
         }
       } catch (e) {
-        localStorage.removeItem(LS_VID);  // stale id -> show empty upload screen
+        lsRemove(LS_VID);  // stale id -> show empty upload screen
       } finally {
         const l = $("#verify-restoring"); if (l) l.remove();
       }
@@ -588,7 +598,7 @@ async function runImageVerify() {
     verifyState.running = false;
     verifyState.activeId = result.verification_id;
     verifyState.lastResult = result;
-    localStorage.setItem(LS_VID, String(result.verification_id));
+    lsSet(LS_VID, String(result.verification_id));
     // Only auto-navigate if the officer is still on this page; otherwise the
     // completed result is preserved and restored when they return.
     if ((location.hash || "").includes("verify")) go("#/result/" + result.verification_id);
@@ -610,7 +620,7 @@ async function runDemo(scenario) {
     });
     cacheResult(result);
     verifyState.running = false;
-    localStorage.setItem(LS_VID, String(result.verification_id));
+    lsSet(LS_VID, String(result.verification_id));
     if ((location.hash || "").includes("verify")) go("#/result/" + result.verification_id);
   } catch (e) {
     verifyState.running = false;
@@ -629,7 +639,7 @@ async function runSynthetic(syntheticId) {
     });
     cacheResult(result);
     verifyState.running = false;
-    localStorage.setItem(LS_VID, String(result.verification_id));
+    lsSet(LS_VID, String(result.verification_id));
     if ((location.hash || "").includes("verify")) go("#/result/" + result.verification_id);
   } catch (e) {
     verifyState.running = false;
@@ -766,7 +776,7 @@ async function captureFaceAndVerify() {
     cacheResult(result);
     verifyState.activeId = result.verification_id;
     verifyState.lastResult = result;
-    localStorage.setItem(LS_VID, String(result.verification_id));
+    lsSet(LS_VID, String(result.verification_id));
     setCamStatus("Verification complete", "done");
     go("#/result/" + result.verification_id);
   } catch (e) {

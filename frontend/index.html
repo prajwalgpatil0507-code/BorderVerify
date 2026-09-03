@@ -8,7 +8,12 @@
 </head>
 <body>
   <!-- ===================== LOGIN ===================== -->
-  <div id="login-view" class="login-view hidden">
+  <!-- login-view is NOT hidden by default: the static login card must render from
+       plain HTML/CSS on every device (including phones with JS blocked or where a
+       privacy mode makes localStorage throw). JS only hides it once it decides to
+       show a signed-in session. This guarantees the GitHub Pages site never loads
+       as a blank page. -->
+  <div id="login-view" class="login-view">
     <div class="login-wrap">
       <div class="login-card">
         <div class="brand-mark">ZB</div>
