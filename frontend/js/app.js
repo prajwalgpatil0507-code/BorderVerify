@@ -117,6 +117,21 @@ function esc(s) {
   }[c]));
 }
 
+/* Resolve a backend-served media path (e.g. "/media/uploads/x.png") against the
+ * resolved API origin. GitHub Pages is static, so a relative "/media/..." would
+ * resolve to the Page's own origin and 404; pointing it at the API origin makes
+ * the ORIGINAL uploaded image load no matter where the page is served. Absolute
+ * (http/https), blob: and data: URLs are returned unchanged. When the API is
+ * same-origin ("/api") the base is empty, so the path stays relative (correct for
+ * the local demo where FastAPI serves the whole app on one origin). */
+function mediaUrl(p) {
+  if (!p) return "";
+  if (/^(https?:|blob:|data:)/i.test(p)) return p;
+  const base = (API || "").replace(/\/api\/?$/, "").replace(/\/+$/, "");
+  if (!base) return p;
+  return base + (p.charAt(0) === "/" ? p : "/" + p);
+}
+
 /* Inline SVG icon set (stroke-based, consistent with the design system). */
 const ICO = {
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
@@ -307,7 +322,7 @@ function row(r) {
   const status = r.verification_status || r.decision || "";
   return `<tr data-id="${r.id}">
     <td>#${r.id}</td>
-    <td>${r.image_url ? `<img class="doc-image-sm" src="${esc(r.image_url)}" alt="document">` : `<span class="muted">-</span>`}</td>
+    <td>${r.image_url ? `<img class="doc-image-sm" src="${esc(mediaUrl(r.image_url))}" alt="document">` : `<span class="muted">-</span>`}</td>
     <td>${esc(r.passenger_name) || "-"}</td>
     <td>${esc(r.document_number) || "-"} <span class="muted">(${esc(r.document_type)})</span> ${methodChip(r.method)}</td>
     <td>${esc(r.nationality)}</td>
@@ -366,7 +381,7 @@ function renderDocPreviewEl(src, name, sizeLabel) {
   const p = $("#doc-preview");
   if (!p) return;
   p.classList.remove("hidden");
-  p.innerHTML = `<img src="${src}" alt="preview"><div><div class="muted">${esc(name)}</div>` +
+  p.innerHTML = `<img src="${esc(mediaUrl(src))}" alt="preview"><div><div class="muted">${esc(name)}</div>` +
     (sizeLabel ? `<div class="muted" style="font-size:12px">${sizeLabel}</div>` : "") + `</div>`;
 }
 
@@ -547,7 +562,7 @@ async function renderVerify() {
         verifyState.docType = result.document_type || verifyState.docType;
         if (dtSel && result.document_type) dtSel.value = verifyState.docType;
         if (result.image_url) {
-          verifyState.docPreview = result.image_url;
+          verifyState.docPreview = mediaUrl(result.image_url);
           renderDocPreviewEl(result.image_url, "Restored document", "");
         }
       } catch (e) {
@@ -603,7 +618,7 @@ async function runImageVerify() {
     const result = await api("/verify/document", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, live_photo_filename: prov, document_type: docType, method: "upload" }),
+      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, live_photo_filename: prov, document_type: docType, method: "upload", original_filename: upload.original_filename || "" }),
       timeout: 90000
     });
     cacheResult(result);
@@ -816,12 +831,12 @@ function imageCards(result) {
   return `<div class="img-grid">
     <div class="card mb">
       <div class="card-title">${ic("doc", "tt-ico")} Document Image</div>
-      ${docImg ? `<img class="doc-image" src="${esc(docImg)}" alt="document">` : `<div class="img-empty"><div class="es-ico">${ic("doc")}</div><div>No document image</div></div>`}
+      ${docImg ? `<img class="doc-image" src="${esc(mediaUrl(docImg))}" alt="document">` : `<div class="img-empty"><div class="es-ico">${ic("doc")}</div><div>No document image</div></div>`}
       <div class="muted mt" style="font-size:11.5px">${docCap}</div>
     </div>
     <div class="card mb">
       <div class="card-title">${ic("cam", "tt-ico")} Live Captured Photo</div>
-      ${liveImg ? `<img class="doc-image" src="${esc(liveImg)}" alt="live photo">` : `<div class="img-empty"><div class="es-ico">${ic("cam")}</div><div>No live photo captured</div></div>`}
+      ${liveImg ? `<img class="doc-image" src="${esc(mediaUrl(liveImg))}" alt="live photo">` : `<div class="img-empty"><div class="es-ico">${ic("cam")}</div><div>No live photo captured</div></div>`}
       <div class="muted mt" style="font-size:11.5px">${liveCap}</div>
     </div>
   </div>`;

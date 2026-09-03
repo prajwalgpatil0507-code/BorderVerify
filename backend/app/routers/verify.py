@@ -59,6 +59,21 @@ def _safe_extension(raw_name: str) -> str:
     return ext
 
 
+def _display_name(raw_name: str) -> str:
+    """Return a safe, displayable original basename (metadata only).
+
+    Strips any directory components and caps the length so the stored
+    ``original_filename`` can never be used for path traversal or fill the
+    column. This is metadata; the actual stored file keeps a server-generated
+    token name via :func:`_save_upload`.
+    """
+    name = Path(raw_name or "").name or "upload"
+    if len(name) > 120:
+        stem, dot_ext = Path(name).stem[:100], Path(name).suffix
+        name = stem + dot_ext
+    return name
+
+
 def _save_upload(file: UploadFile, prefix: str = "doc") -> str:
     """Persist an uploaded file to the UPLOAD_DIR and return its safe filename.
 
@@ -86,7 +101,9 @@ async def upload_document(file: UploadFile = File(...)):
     filename = _save_upload(file, "doc")
     return UploadResponse(file_id=filename, filename=filename,
                           file_type=file.content_type or "application/octet-stream",
-                          size_bytes=(Path(UPLOAD_DIR) / filename).stat().st_size)
+                          size_bytes=(Path(UPLOAD_DIR) / filename).stat().st_size,
+                          image_url=f"/media/uploads/{filename}",
+                          original_filename=_display_name(file.filename))
 
 
 @router.post("/upload-photo")
@@ -96,7 +113,9 @@ async def upload_photo(file: UploadFile = File(...)):
     filename = _save_upload(file, "photo")
     return UploadResponse(file_id=filename, filename=filename,
                           file_type=file.content_type or "application/octet-stream",
-                          size_bytes=(Path(UPLOAD_DIR) / filename).stat().st_size)
+                          size_bytes=(Path(UPLOAD_DIR) / filename).stat().st_size,
+                          image_url=f"/media/uploads/{filename}",
+                          original_filename=_display_name(file.filename))
 
 
 @router.post("/ocr/extract")
@@ -175,10 +194,13 @@ async def verify_document(request: VerifyRequest,
                        reference_photo_filename=request.reference_photo_filename or "",
                        image_url=f"/media/uploads/{request.image_filename}",
                        live_photo_filename=_live_photo,
-                       method=getattr(request, "method", "upload"))
+                       method=getattr(request, "method", "upload"),
+                       original_filename=getattr(request, "original_filename", None) or "")
     result["verification_id"] = session.id
     result["image_url"] = f"/media/uploads/{request.image_filename}"
     result["method"] = getattr(request, "method", "upload")
+    if getattr(request, "original_filename", None):
+        result["original_filename"] = request.original_filename
     if _live_photo:
         result["live_photo_url"] = f"/media/uploads/{_live_photo}"
     log_audit(db, officer.id, "verify_document",
@@ -194,6 +216,7 @@ async def verify_complete(filename: str = Form(...),
                           live_photo_filename: Optional[str] = Form(None),
                           document_type: str = Form("auto"),
                           method: str = Form("upload"),
+                          original_filename: Optional[str] = Form(None),
                           officer: Officer = Depends(get_current_officer),
                           db: Session = Depends(get_db)):
     """Convenience multipart endpoint that verifies an already-uploaded image."""
@@ -222,10 +245,13 @@ async def verify_complete(filename: str = Form(...),
                        reference_photo_filename or "",
                        image_url=f"/media/uploads/{filename}",
                        live_photo_filename=live_photo_filename or "",
-                       method=method)
+                       method=method,
+                       original_filename=original_filename or "")
     result["verification_id"] = session.id
     result["image_url"] = f"/media/uploads/{filename}"
     result["method"] = method
+    if original_filename:
+        result["original_filename"] = original_filename
     if live_photo_filename:
         result["live_photo_url"] = f"/media/uploads/{live_photo_filename}"
     return result
@@ -366,7 +392,7 @@ async def get_alerts(officer: Officer = Depends(get_current_officer),
 
 def _persist(session, db, result, officer_id, image_filename,
              reference_photo_filename, image_url="", method="upload",
-             live_photo_filename=""):
+             live_photo_filename="", original_filename=""):
     """Persist a verification session + alerts and mirror the record to MongoDB.
 
     The `session` argument is accepted for API compatibility but currently
@@ -390,6 +416,8 @@ def _persist(session, db, result, officer_id, image_filename,
     if live_photo_filename:
         stored_result["live_photo_url"] = f"/media/uploads/{live_photo_filename}"
         stored_result["live_photo_filename"] = live_photo_filename
+    if original_filename:
+        stored_result["original_filename"] = original_filename
     stored_result["method"] = method
     session = VerificationSession(
         officer_id=officer_id,

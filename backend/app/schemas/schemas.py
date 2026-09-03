@@ -32,6 +32,11 @@ class UploadResponse(BaseModel):
     filename: str
     file_type: str
     size_bytes: int
+    # Full, backend-served path for the stored image (e.g. /media/uploads/<file>).
+    # The frontend uses this URL to display the ORIGINAL uploaded document.
+    image_url: str = ""
+    # The original client-supplied filename (sanitized basename), preserved as metadata.
+    original_filename: str = ""
 
 
 class VerifyRequest(BaseModel):
@@ -44,6 +49,8 @@ class VerifyRequest(BaseModel):
         None, description="Optional live-captured applicant photo filename "
                           "(shown on the result page in the 'Live Captured Photo' card)")
     method: str = Field("upload", description="upload | live_camera | demo | synthetic")
+    # Original client-supplied document filename, stored as record metadata.
+    original_filename: Optional[str] = None
     # Optional manual passenger attributes (form data)
     full_name: Optional[str] = None
     date_of_birth: Optional[str] = None
