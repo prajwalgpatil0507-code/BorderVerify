@@ -276,7 +276,7 @@ async function renderDashboard() {
         <div class="stat-value">${value}</div><div class="stat-sub">${sub}</div>
       </div>`;
     const empty = history.length ? "" : `
-      <tr><td colspan="7" class="muted" style="text-align:center;padding:28px">
+      <tr><td colspan="8" class="muted" style="text-align:center;padding:28px">
         No verifications yet. Run a <a href="#/verify">demo case</a> or verify a document.
       </td></tr>`;
     c.innerHTML = `
@@ -294,7 +294,7 @@ async function renderDashboard() {
           <button class="btn btn-ghost btn-sm" onclick="go('#/verify')">${ic("upload")} New Verification</button>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>No.</th><th>Passenger</th><th>Document</th><th>Nationality</th><th>Score</th><th>Decision</th><th>Time</th></tr></thead>
+          <thead><tr><th>No.</th><th>Image</th><th>Passenger</th><th>Document</th><th>Nationality</th><th>Score</th><th>Decision</th><th>Time</th></tr></thead>
           <tbody>${history.length ? history.map(row).join("") : empty}</tbody>
         </table></div>
       </div>`;
@@ -306,7 +306,9 @@ function row(r) {
   const cls = r.risk_level === "HIGH" ? "badge-red" : r.risk_level === "MEDIUM" ? "badge-yellow" : "badge-green";
   const status = r.verification_status || r.decision || "";
   return `<tr data-id="${r.id}">
-    <td>#${r.id}</td><td>${esc(r.passenger_name) || "-"}</td>
+    <td>#${r.id}</td>
+    <td>${r.image_url ? `<img class="doc-image-sm" src="${esc(r.image_url)}" alt="document">` : `<span class="muted">-</span>`}</td>
+    <td>${esc(r.passenger_name) || "-"}</td>
     <td>${esc(r.document_number) || "-"} <span class="muted">(${esc(r.document_type)})</span> ${methodChip(r.method)}</td>
     <td>${esc(r.nationality)}</td>
     <td><span class="badge ${cls}">${r.risk_score}</span></td>
@@ -1287,7 +1289,7 @@ async function renderHistory() {
   try {
     const history = await api("/verification/history?limit=100");
     const body = history.length ? history.map(row).join("")
-      : `<tr><td colspan="7" class="muted" style="text-align:center;padding:28px">No verifications yet. Run a <a href="#/verify">demo case</a>.</td></tr>`;
+      : `<tr><td colspan="8" class="muted" style="text-align:center;padding:28px">No verifications yet. Run a <a href="#/verify">demo case</a>.</td></tr>`;
     c.innerHTML = `
       <div class="card">
         <div class="flex mb" style="justify-content:space-between">
@@ -1295,7 +1297,7 @@ async function renderHistory() {
           <button class="btn btn-ghost btn-sm" onclick="go('#/verify')">${ic("upload")} New Verification</button>
         </div>
         <div class="table-wrap"><table>
-        <thead><tr><th>No.</th><th>Passenger</th><th>Document</th><th>Nationality</th><th>Score</th><th>Decision</th><th>Time</th></tr></thead>
+        <thead><tr><th>No.</th><th>Image</th><th>Passenger</th><th>Document</th><th>Nationality</th><th>Score</th><th>Decision</th><th>Time</th></tr></thead>
         <tbody>${body}</tbody>
         </table></div>
       </div>`;

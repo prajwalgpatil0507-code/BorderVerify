@@ -80,6 +80,8 @@ class VerificationSession(Base):
             "risk_level": self.risk_level,
             "decision": self.decision,
             "verification_status": (self.result_json or {}).get("verification_status", ""),
+            "image_url": (self.result_json or {}).get("image_url")
+                         or (f"/media/uploads/{self.image_filename}" if self.image_filename else ""),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

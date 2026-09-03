@@ -185,5 +185,6 @@ def _verification_summary(rec: dict) -> dict:
         "risk_level": rec.get("risk_level", "LOW"),
         "decision": rec.get("decision", "VERIFIED"),
         "verification_status": rec.get("verification_status") or result.get("verification_status", ""),
+        "image_url": result.get("image_url") or rec.get("image_url") or "",
         "created_at": _iso(rec.get("created_at")),
     }
