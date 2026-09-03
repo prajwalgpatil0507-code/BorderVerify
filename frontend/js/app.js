@@ -2,28 +2,32 @@
 "use strict";
 
 /* =================================================================== *
- * BACKEND API BASE URL  —  runtime discovery, no fabricated host.
+ * BACKEND API BASE URL  —  ONE configurable value, no loopback host.
  * =================================================================== *
- * GitHub Pages is STATIC and cannot run FastAPI. The real backend runs locally
- * (backend/app/main.py + config.py: API_PREFIX="/api", host 127.0.0.1:8000). A page
- * served from GitHub Pages and opened in the SAME browser as a running local backend
- * can reach it over loopback: modern browsers treat http://127.0.0.1 and
- * http://localhost as "potentially trustworthy" origins, and the backend's CORS
- * allow-list already includes this GitHub Pages origin + the localhost origins
- * (backend/app/config.py).
+ * GitHub Pages is STATIC and cannot run FastAPI. The frontend reaches a separately
+ * hosted FastAPI backend through a SINGLE configuration value set in index.html:
  *
- * We PROBE every place the backend could be and use the first one that answers
- * /api/health. There is NO hardcoded public URL — a static host has no public
- * backend, and we never invent one. This makes login + the whole app work on GitHub
- * Pages for a presenter-run demo (backend on the same machine), and fails fast (no
- * "Signing in…" stuck state) when nothing is reachable.
+ *     window.BV_API_URL
+ *
+ * That value is intentionally EMPTY in this repo so the deployed GitHub Pages site
+ * NEVER contacts localhost / 127.0.0.1 (a static page has no running backend, and
+ * no public backend URL is invented). Once your FastAPI backend has a public HTTPS
+ * URL, set e.g.
+ *
+ *     window.BV_API_URL = "https://your-api.example.com/api"
+ *
+ * and push — that is the ONLY value you change. Behavior:
+ *   - If window.BV_API_URL is set, that exact base is used for EVERY API call.
+ *   - If it is empty, the app falls back to a same-origin "/api" so LOCAL dev
+ *     (where uvicorn serves the SPA on its own origin) keeps working. This string
+ *     is relative — it never hardcodes localhost or 127.0.0.1 in the shipped bundle.
+ * The login button never sticks on "Signing in…": every API call carries a timeout
+ * that fails fast with a clear message.
  * =================================================================== */
 
 const BACKEND_CANDIDATES = [];
 if (window.BV_API_URL) BACKEND_CANDIDATES.push(String(window.BV_API_URL));
-BACKEND_CANDIDATES.push("/api");                      // local: FastAPI serves the SPA
-BACKEND_CANDIDATES.push("http://127.0.0.1:8000/api"); // local backend (loopback demo)
-BACKEND_CANDIDATES.push("http://localhost:8000/api"); // local backend (loopback alias)
+BACKEND_CANDIDATES.push("/api"); // same-origin: local dev where FastAPI serves the SPA
 
 let API = ""; // resolved backend base — set only when a candidate answers /health
 
@@ -51,15 +55,16 @@ async function discoverBackend() {
   const seen = [];
   for (const c of BACKEND_CANDIDATES) if (c && seen.indexOf(c) < 0) seen.push(c);
   if (!seen.length) { API = ""; setBackendStatus("Backend not reachable."); return ""; }
-  // Probe all candidates concurrently; adopt the first healthy one. When the
-  // backend is up the loopback candidate answers in ms, so the login button never
-  // hangs; when every candidate is down we resolve fast with a clear message.
+  // Probe all candidates concurrently; adopt the first healthy one. When
+  // window.BV_API_URL points at a reachable backend it answers in ms, so the login
+  // button never hangs; when nothing is reachable we resolve fast with a clear
+  // message. No localhost / 127.0.0.1 is ever contacted from a deployed page.
   await Promise.all(seen.map(base => probeBackend(base).then(ok => {
     if (ok && !API) { API = ok; setBackendStatus("Backend connected", "success"); }
   })));
   if (!API) {
     API = "";
-    setBackendStatus("Backend not reachable. Start the FastAPI backend (backend/ on 127.0.0.1:8000) and open this site in the browser on that same machine, then refresh.", "");
+    setBackendStatus("Backend API URL not configured. Set window.BV_API_URL in frontend/index.html to your deployed FastAPI backend root, then redeploy.", "");
   }
   return API;
 }
@@ -154,7 +159,7 @@ async function api(path, options = {}) {
   // is up and rejects fast when none is reachable, instead of fetching a dead URL.
   await backendReady;
   if (!API) {
-    throw new Error("Backend not reachable. Start the FastAPI backend (backend/ on 127.0.0.1:8000) and open this site in the browser on that same machine, then refresh.");
+    throw new Error("Backend API URL not configured. Set window.BV_API_URL in frontend/index.html to your deployed FastAPI backend root, then redeploy.");
   }
   const headers = options.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
