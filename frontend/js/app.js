@@ -101,7 +101,7 @@ async function api(path, options = {}) {
   // An empty base on a static GitHub Pages deploy means the backend URL was not
   // configured yet. Surface that clearly instead of fetching a bogus path.
   if (!API) {
-    throw new Error("Backend API URL not configured. Open frontend/index.html and set window.BV_API_URL to your running FastAPI backend.");
+    throw new Error("Backend API URL not configured. This static GitHub Pages site cannot reach FastAPI — set window.BV_API_URL in frontend/index.html to a running backend, then redeploy.");
   }
   const headers = options.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
@@ -1414,6 +1414,17 @@ window.addEventListener("load", () => {
     }
   });
   $("#logout-btn").onclick = () => logout(false);
+  // On a static GitHub Pages build with no backend configured, tell the officer
+  // UP FRONT (before any click) that a running FastAPI backend is required.
+  // Login never hangs: api() throws fast when the base is empty, and the submit
+  // handler replaces this message with the actual result.
+  if (!API) {
+    const msg = $("#login-msg");
+    if (msg) {
+      msg.className = "login-msg";
+      msg.textContent = "Backend not reachable: this GitHub Pages site is static and has no FastAPI backend configured. Set window.BV_API_URL in frontend/index.html to a running backend, then redeploy. Login will not hang — it reports this instead.";
+    }
+  }
   try {
     route();
   } catch (err) { showFatal(err); }
