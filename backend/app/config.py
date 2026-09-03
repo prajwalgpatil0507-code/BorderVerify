@@ -56,12 +56,19 @@ class Settings:
     APP_NAME: str = os.getenv("APP_NAME", "Zynovix BorderVerity")
     API_PREFIX: str = os.getenv("API_PREFIX", "/api")
     SECRET_KEY: str = os.getenv("SECRET_KEY", "sih-zynovix-demo-secret-change-me")
-    # Comma-separated list of allowed CORS origins. In production set this to the
-    # deployed frontend origin(s), e.g. "https://my-app.onrender.com". "*" allows
-    # any origin (convenient for local dev; tighten it for production). The
-    # frontend and backend are served from the same origin, so CORS is mainly
-    # relevant only if the SPA is hosted separately from the API.
-    CORS_ORIGINS: list = _parse_csv(os.getenv("CORS_ORIGINS", "*"))
+    # Comma-separated list of allowed CORS origins.
+    #   - Local dev: the frontend may be served from a static server on 5500,
+    #     and the backend is served by uvicorn on 8000, so both localhost origins
+    #     must be allowed to call it cross-origin.
+    #   - Production: the static frontend lives on GitHub Pages and calls the
+    #     deployed FastAPI backend, so the GitHub Pages origin must be allowed.
+    # Override with the CORS_ORIGINS env var and list your exact deployed origin.
+    # Do NOT use "*" together with allow_credentials=True in production — browsers
+    # reject credentialed cross-origin requests then.
+    CORS_ORIGINS: list = _parse_csv(os.getenv("CORS_ORIGINS",
+        "http://127.0.0.1:5500,http://localhost:5500,"
+        "http://127.0.0.1:8000,http://localhost:8000,"
+        "https://prajwalgpatil0507-code.github.io"))
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))
 

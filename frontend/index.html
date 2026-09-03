@@ -76,6 +76,14 @@
   <!-- ===================== TOAST ===================== -->
   <div id="toast" class="toast hidden"></div>
 
+  <!-- ===== BACKEND API URL — the ONE place to configure your FastAPI backend =====
+       GitHub Pages is static; it cannot run FastAPI. Point this at your running
+       backend (e.g. "https://myapi.example.com/api"). Leave empty to show a clear
+       "Backend API URL not configured" message instead of a dead request. -->
+  <script>
+    window.BV_API_URL = "";  // <-- set your deployed FastAPI backend root here
+  </script>
+
   <script src="js/app.js"></script>
 </body>
 </html>

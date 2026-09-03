@@ -1,25 +1,29 @@
 /* Zynovix BorderVerity - frontend SPA (vanilla JS, no build step). */
 "use strict";
 
-/* ------------------------------------------------------------------ *
- * Backend API base URL.
+/* =================================================================== *
+ * BACKEND API BASE URL  —  one configurable value, no hardcoded host.
+ * =================================================================== *
+ * GitHub Pages is STATIC and cannot run FastAPI, so the frontend must call a
+ * separately-running FastAPI backend. The backend URL is configured in ONE place:
+ * set `window.BV_API_URL` in frontend/index.html, e.g.:
  *
- * The frontend runs in two modes:
- *   LOCAL      - the FastAPI app serves BOTH the UI and the API on the same
- *                origin (the local dev server). A relative "/api" base reaches
- *                it, so no host/port is hardcoded in the bundle.
- *   PRODUCTION - the frontend is a STATIC site on GitHub Pages, hosted at
- *                <user>.github.io/<repo>/, so the API is NOT on the same origin.
- *                It must call the separate deployed FastAPI backend (render.yaml
- *                service name "borderverify" -> https://borderverify.onrender.com).
+ *   window.BV_API_URL = "https://your-fastapi-backend.example.com/api";
  *
- * Override: set window.BV_API_URL before this file loads (e.g. from index.html)
- * to point at a custom backend host if yours differs from the render.yaml default.
- * ------------------------------------------------------------------ */
-const DEPLOYED_API_URL = "https://borderverify.onrender.com/api";
-const API = window.BV_API_URL
-  ? window.BV_API_URL
-  : (/\.github\.io$/.test(location.hostname) ? DEPLOYED_API_URL : "/api");
+ * Rules enforced here:
+ *   - No host is hardcoded in the bundle. On GitHub Pages, if window.BV_API_URL
+ *     is not set, the app reports "Backend API URL not configured" instead of
+ *     silently hitting a dead launch target.
+ *   - No localhost / 127.0.0.1 is used for the deployed (GitHub Pages) build.
+ *   - LOCAL DEV only: when FastAPI serves the SPA itself (uvicorn on port 8000),
+ *     a same-origin "/api" reaches the API, so nothing is hardcoded.
+ * =================================================================== */
+const IS_GITHUB_PAGES = /\.github\.io$/.test(location.hostname);
+const API_BASE_URL =
+  window.BV_API_URL ||              // configured backend (set in index.html)
+  (IS_GITHUB_PAGES ? "" : "/api");  // GitHub Pages: must be configured; else same-origin
+
+const API = API_BASE_URL;
 
 const state = {
   token: localStorage.getItem("bv_token") || null,
@@ -86,16 +90,50 @@ function toast(msg, isError) {
   toast._t = setTimeout(() => t.classList.add("hidden"), 3400);
 }
 
+// Default abort window for QUICK requests (login, history, dashboard, uploads).
+// The only realistic stall here is an unreachable backend, so 15s fails fast and
+// the UI never stays stuck on "Signing in…". Heavy verification calls (OCR + ML)
+// PASS a much longer timeout explicitly (see /verify/* call sites) so a legitimate
+// multi-second verification is never aborted.
+const NETWORK_TIMEOUT_MS = 15000;
+
 async function api(path, options = {}) {
+  // An empty base on a static GitHub Pages deploy means the backend URL was not
+  // configured yet. Surface that clearly instead of fetching a bogus path.
+  if (!API) {
+    throw new Error("Backend API URL not configured. Open frontend/index.html and set window.BV_API_URL to your running FastAPI backend.");
+  }
   const headers = options.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  const res = await fetch(API + path, { ...options, headers });
+  // Per-call timeout: heavy verification pipelines (OCR + ML) can legitimately
+  // take a while, so those callers pass a long timeout. Quick reads (login,
+  // history, dashboard) use the short default so an unreachable backend fails
+  // fast instead of leaving the UI stuck.
+  const timeout = options.timeout || NETWORK_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(API + path, { ...options, headers, signal: controller.signal });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      throw new Error("Backend unavailable. Please try again.");
+    }
+    throw new Error("Could not reach the backend. Is it running?");
+  } finally {
+    clearTimeout(timer);
+  }
   if (res.status === 401 && path !== "/auth/login") {
     logout(true);
     throw new Error("Session expired. Please sign in again.");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || res.statusText);
+  if (!res.ok) {
+    const detail = data.detail || (typeof data === "string" ? data : "") || res.statusText || "Request failed";
+    const e = new Error(detail);
+    e.status = res.status; // carry the status so the caller can log it
+    throw e;
+  }
   return data;
 }
 
@@ -500,7 +538,8 @@ async function runImageVerify() {
     const result = await api("/verify/document", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, live_photo_filename: prov, document_type: docType, method: "upload" })
+      body: JSON.stringify({ image_filename: upload.filename, reference_photo_filename: null, provided_photo_filename: prov, live_photo_filename: prov, document_type: docType, method: "upload" }),
+      timeout: 90000
     });
     cacheResult(result);
     verifyState.running = false;
@@ -523,7 +562,8 @@ async function runDemo(scenario) {
   try {
     const result = await api("/verify/demo", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario })
+      body: JSON.stringify({ scenario }),
+      timeout: 90000
     });
     cacheResult(result);
     verifyState.running = false;
@@ -541,7 +581,8 @@ async function runSynthetic(syntheticId) {
   try {
     const result = await api("/verify/synthetic", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ synthetic_id: syntheticId })
+      body: JSON.stringify({ synthetic_id: syntheticId }),
+      timeout: 90000
     });
     cacheResult(result);
     verifyState.running = false;
@@ -675,7 +716,8 @@ async function captureFaceAndVerify() {
     const result = await api("/verify/document", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_filename: upDoc.filename, reference_photo_filename: null, provided_photo_filename: upFace.filename, live_photo_filename: upFace.filename, document_type: docType, method: "live_camera" })
+      body: JSON.stringify({ image_filename: upDoc.filename, reference_photo_filename: null, provided_photo_filename: upFace.filename, live_photo_filename: upFace.filename, document_type: docType, method: "live_camera" }),
+      timeout: 90000
     });
     stopCamera();
     cacheResult(result);
@@ -1349,15 +1391,26 @@ window.addEventListener("load", () => {
   $("#login-form").addEventListener("submit", async e => {
     e.preventDefault();
     const msg = $("#login-msg");
+    const user = $("#login-user").value.trim();
+    const pass = $("#login-pass").value;
     msg.className = "login-msg info"; msg.textContent = "Signing in…";
+    console.log("[LOGIN] REQUEST URL:", API + "/auth/login");
+    console.log("[LOGIN] REQUEST METHOD: POST");
+    console.log("[LOGIN] REQUEST STARTED", new Date().toISOString());
     try {
-      await login($("#login-user").value.trim(), $("#login-pass").value);
+      await login(user, pass);
+      console.log("[LOGIN] RESPONSE STATUS: 200");
+      console.log("[LOGIN] RESPONSE BODY: ok (token stored, username=" + state.user.username + ", role=" + state.user.role + ")");
       msg.textContent = "";
       toast("Welcome, officer");
       if (!location.hash || location.hash === "#/" || location.hash === "#/login") location.hash = "#/dashboard";
       route();
     } catch (err) {
-      msg.className = "login-msg"; msg.textContent = (err && err.message) || "Login failed";
+      const status = (err && err.status) || "N/A";
+      console.log("[LOGIN] RESPONSE STATUS:", status);
+      console.log("[LOGIN] ERROR:", (err && err.message) || err);
+      msg.className = "login-msg";
+      msg.textContent = (err && err.message) || "Login failed. Please try again.";
     }
   });
   $("#logout-btn").onclick = () => logout(false);
