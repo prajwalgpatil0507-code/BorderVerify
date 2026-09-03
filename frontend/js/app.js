@@ -2,37 +2,47 @@
 "use strict";
 
 /* =================================================================== *
- * BACKEND API BASE URL  —  auto-discovery + ONE configurable override.
+ * BACKEND API BASE URL  —  ONE configurable override (window.BV_API_URL).
  * =================================================================== *
- * GitHub Pages is STATIC and cannot run FastAPI. This frontend connects to the
- * FastAPI backend by probing candidate bases (in order) and using the FIRST one
- * that answers GET {base}/health with status "ok". Nothing is assumed "always on":
- * every candidate is probed at runtime, so a remote visitor just gets a clear
- * message instead of a broken page.
+ * GitHub Pages is STATIC and cannot run FastAPI. This frontend resolves the
+ * backend base from a single, user-editable variable:
  *
- *   1. window.BV_API_URL  — the single explicit override in frontend/index.html.
- *      Leave it EMPTY in the repo; set it the moment there is a PUBLIC HTTPS
- *      backend, e.g.   window.BV_API_URL = "https://your-api.example.com/api"
- *   2. http://127.0.0.1:8000/api and http://localhost:8000/api — the LOCAL FastAPI
- *      backend (backend/ on port 8000). This is reached only when the GitHub Pages
- *      page is opened in a browser on the SAME machine that runs FastAPI (the
- *      presenter's demo laptop); browsers treat localhost/127.0.0.1 as a
- *      trustworthy origin, so an HTTPS GitHub Pages page may call it. On a phone or
- *      another device nothing is listening there, so those probes fail fast.
- *   3. /api — same-origin fallback for local dev where uvicorn serves the SPA.
+ *     window.BV_API_URL        // in frontend/index.html (the ONLY thing you edit)
  *
- * The login button never sticks on "Signing in…": each call carries a timeout that
- * fails fast. (A page opened on a device other than the one running FastAPI cannot
- * reach a localhost backend — a public HTTPS backend URL is required for that.)
+ * Set it to your PUBLIC HTTPS backend. If you expose the local FastAPI via
+ * ngrok, use the ROOT ngrok URL — the "/api" path prefix is appended
+ * automatically, so you do NOT add it yourself:
+ *
+ *     window.BV_API_URL = "https://YOUR-NAME.ngrok-free.app"
+ *     // -> requests hit https://YOUR-NAME.ngrok-free.app/api/...
+ *
+ * It ships EMPTY in the repo. With it empty, the deployed GitHub Pages site
+ * cannot reach any backend, so the app shows a clear "Backend not reachable"
+ * message (it never attempts a dead loopback-address call). Local dev
+ * (uvicorn serving the SPA on its own origin) still works via the same-origin
+ * "/api" fallback below.
+ *
+ * Resolution order (the first healthy base that answers GET {base}/health with
+ * status "ok" is used):
+ *   1. window.BV_API_URL  (normalized so "/api" is present)
+ *   2. /api               (same-origin fallback for local dev)
  * =================================================================== */
 
+// Ensure the configured base carries the "/api" path prefix exactly once. The
+// backend serves its routes under /api, so a root ngrok URL such as
+// "https://x.ngrok-free.app" must become "https://x.ngrok-free.app/api".
+function normalizeBase(url) {
+  const u = String(url || "").trim().replace(/\/+$/, "");
+  if (!u) return u;
+  return /\/api$/i.test(u) ? u : u + "/api";
+}
+
 const BACKEND_CANDIDATES = [];
-if (window.BV_API_URL) BACKEND_CANDIDATES.push(String(window.BV_API_URL));
-// Local FastAPI backend (backend/ on port 8000). Only reached when the GitHub Pages
-// page is opened on the same machine that runs FastAPI. Probed, never assumed up.
-BACKEND_CANDIDATES.push("http://127.0.0.1:8000/api");
-BACKEND_CANDIDATES.push("http://localhost:8000/api");
-BACKEND_CANDIDATES.push("/api"); // same-origin: local dev where FastAPI serves the SPA
+if (window.BV_API_URL) BACKEND_CANDIDATES.push(normalizeBase(window.BV_API_URL));
+// Same-origin fallback: local dev where uvicorn serves the SPA on its own origin.
+// On the deployed GitHub Pages site this resolves to the Page's own origin and
+// simply 404s — which is exactly why window.BV_API_URL is the real override.
+BACKEND_CANDIDATES.push("/api");
 
 let API = ""; // resolved backend base — set only when a candidate answers /health
 
@@ -69,7 +79,7 @@ async function discoverBackend() {
   })));
   if (!API) {
     API = "";
-    setBackendStatus("Backend not reachable from here. On the demo laptop, ensure the FastAPI backend (backend/) is running on port 8000, then refresh. From another device, the backend must be exposed at a public HTTPS URL (set window.BV_API_URL).", "");
+    setBackendStatus("Backend not reachable. Set window.BV_API_URL in frontend/index.html to your public backend URL (e.g. your ngrok root URL — the /api prefix is added automatically), then refresh.", "");
   }
   return API;
 }
@@ -179,7 +189,7 @@ async function api(path, options = {}) {
   // is up and rejects fast when none is reachable, instead of fetching a dead URL.
   await backendReady;
   if (!API) {
-    throw new Error("Backend not reachable from here. On the demo laptop, ensure the FastAPI backend (backend/) is running on port 8000, then refresh. From another device, the backend must be exposed at a public HTTPS URL (set window.BV_API_URL).");
+    throw new Error("Backend not reachable. Set window.BV_API_URL in frontend/index.html to your public backend URL (e.g. your ngrok root URL — the /api prefix is added automatically), then refresh.");
   }
   const headers = options.headers || {};
   if (state.token) headers["Authorization"] = "Bearer " + state.token;

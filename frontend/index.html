@@ -83,16 +83,16 @@
   <div id="toast" class="toast hidden"></div>
 
   <!-- ===== BACKEND API URL — the ONE value you edit =====
-       Set this to your deployed FastAPI backend root, e.g.:
-         window.BV_API_URL = "https://your-api.example.com/api";
-       It ships EMPTY so the deployed GitHub Pages site NEVER contacts localhost /
-       127.0.0.1 (GitHub Pages is static and cannot run FastAPI, and there is no
-       public backend URL yet). With this empty, the app reports "Backend API URL
-       not configured" instead of making a dead localhost request, and local dev
-       (FastAPI serving the SPA on its own origin) still works via same-origin.
-       Change ONLY this line once the real backend has a public HTTPS URL. -->
+       Paste your public backend URL here. The "/api" path prefix is added
+       automatically, so use the ROOT URL only. Example with ngrok:
+         window.BV_API_URL = "https://YOUR-NAME.ngrok-free.app";
+       It ships EMPTY so the deployed GitHub Pages site NEVER contacts a local
+       loopback address (GitHub Pages is static and cannot run FastAPI). With it empty the
+       app shows "Backend not reachable" instead of making a dead request; local
+       dev (FastAPI serving the SPA on its own origin) still works via same-origin.
+       Change ONLY the line below once you start ngrok. -->
   <script>
-    window.BV_API_URL = ""; // <-- set to your public FastAPI backend root (e.g. "https://api.example.com/api")
+    window.BV_API_URL = ""; // <-- paste your ngrok ROOT here (no /api — added automatically), e.g. "https://YOUR-NAME.ngrok-free.app"
   </script>
 
   <script src="js/app.js"></script>
