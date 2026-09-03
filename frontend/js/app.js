@@ -6,8 +6,8 @@
  *
  * The frontend runs in two modes:
  *   LOCAL      - the FastAPI app serves BOTH the UI and the API on the same
- *                origin (e.g. http://127.0.0.1:8000). A relative "/api" base
- *                reaches it, so no host/port is hardcoded in the bundle.
+ *                origin (the local dev server). A relative "/api" base reaches
+ *                it, so no host/port is hardcoded in the bundle.
  *   PRODUCTION - the frontend is a STATIC site on GitHub Pages, hosted at
  *                <user>.github.io/<repo>/, so the API is NOT on the same origin.
  *                It must call the separate deployed FastAPI backend (render.yaml
